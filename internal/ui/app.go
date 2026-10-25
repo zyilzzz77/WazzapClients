@@ -49,6 +49,14 @@ type UI struct {
 	dark bool
 	// doodles draws the wallpaper's doodles behind conversations.
 	doodles bool
+	// densityName is the chat list's density (density.go): "" is
+	// Comfortable, "compact" is Compact.
+	densityName string
+	// viewOnceSave is the "Allow saving view-once media" privacy setting
+	// (viewonce_save.go); off by default.
+	viewOnceSave bool
+	// wallpaperDlg is the open wallpaper dialog's state (wallpaper_ui.go).
+	wallpaperDlg wallpaperDialog
 	// autoPhotos downloads pictures as they show (Settings > Storage);
 	// otherwise their thumbnails show until they're opened.
 	autoPhotos bool
@@ -72,6 +80,7 @@ type UI struct {
 	listsStale bool
 	// auto is the backend's scheduled messages and AFK (see withAuto).
 	auto    *auto.Backend
+	ai      aiUI // the AI assistant (ai_settings.go)
 	conn    model.ConnEvent
 	syncPct int // initial history sync progress; -1 when not syncing
 	me      string
@@ -368,6 +377,7 @@ func New(b model.Backend) *UI {
 	if b != nil { // nil in some tests
 		u.applyTheme()
 		u.doodles = prefOn(b, prefDoodles)
+		u.densityName = b.Pref(prefDensity)
 		u.autoPhotos = model.AutoDownload(b.Pref, model.MediaImage)
 		u.loadZoom()
 		u.loadVolume()
@@ -400,6 +410,7 @@ func New(b model.Backend) *UI {
 	u.conv.list.ScrollToEnd = true
 	u.conv.composer.Submit = b == nil || prefOn(b, prefEnterSend)
 	u.loadExtras()
+	u.loadAI()
 	u.loadPrivacy()
 	u.conv.mentionList.Axis = layout.Vertical
 	u.hovered = make(map[string]bool)
@@ -603,16 +614,11 @@ func (u *UI) SelectName(name string) {
 
 // SetDark switches between the light and dark palettes.
 func (u *UI) SetDark(dark bool) {
-	u.dark = dark
 	if dark {
-		u.pal = &darkPalette
+		u.setPalette(&darkPalette, true)
 	} else {
-		u.pal = &lightPalette
+		u.setPalette(&lightPalette, false)
 	}
-	u.th.Palette.Fg = u.pal.Text
-	u.th.Palette.Bg = u.pal.Panel
-	richBlocks.m = nil // spans carry palette colors (mentions, links)
-	u.th.Palette.ContrastBg = u.pal.Green
 }
 
 // Escape presses Esc, closing the topmost overlay (used for screenshots).
@@ -646,6 +652,7 @@ func (u *UI) open(c *model.Chat) {
 	if u.selected != nil && u.selected.ID == c.ID && u.selPage == u.page {
 		return
 	}
+	u.stashScroll() // the leaving chat's position, for this account
 	u.stashDraft()
 	u.selPage = u.page
 	if u.info.from != c.ID {
@@ -676,6 +683,7 @@ func (u *UI) open(c *model.Chat) {
 	u.discardRecording()
 	u.dropAttachments()
 	u.restoreDraft()
+	u.restoreScroll()
 }
 
 // idleAfter is how long without input makes the user away (markSeen).
@@ -708,7 +716,7 @@ func (u *UI) markSeen() bool {
 
 // chatRead takes a chat's notification away once the chat is read here.
 func (u *UI) chatRead(id string) {
-	if u.host != nil {
+	if u.host != nil && u.host.notes != nil {
 		u.host.notes.read(id)
 	}
 }
@@ -801,6 +809,7 @@ func (u *UI) layoutWindow(gtx C) D {
 	u.layoutReactions(gtx)
 	u.layoutDialog(gtx)
 	u.layoutToast(gtx)
+	u.shortcutKeys(gtx)
 	u.trackMouse(gtx)
 	u.flushClipboard(gtx) // copies requested during this frame's layout
 	return D{Size: sz}
@@ -1206,6 +1215,8 @@ func (u *UI) escape() {
 		u.search.open = false
 	case u.msgInfo.open:
 		u.msgInfo.open = false
+	case u.listQuery() != "":
+		u.sidebar.search.SetText("")
 	case u.newChat.open():
 		u.newChatBack()
 	case u.sidebar.pick.on && u.page == pageChats:

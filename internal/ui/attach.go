@@ -356,6 +356,9 @@ func (u *UI) qualityMenuItems() []menuItem {
 		items = append(items, item("raw", "Raw quality", model.QualityRaw))
 		note += " Raw photos are sent as they are."
 	}
+	if v := a.videoSizeNote(); v != "" {
+		note += " " + v
+	}
 	return append(items, menuItem{divider: true}, menuItem{note: true, label: note})
 }
 
@@ -405,6 +408,11 @@ func (u *UI) addFiles(chatID string, files []*attachFile) {
 			// The Status page was left while the file dialog was open.
 			removeTemps(files)
 			return
+		}
+		// A status starts at Standard quality, whatever a chat used last;
+		// the HD toggle is remembered for this status post, not per chat.
+		if len(a.files) == 0 {
+			a.quality = model.QualityStandard
 		}
 		if statusGroup(chatID) != "" {
 			for _, f := range files {

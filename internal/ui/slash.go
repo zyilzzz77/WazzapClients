@@ -404,7 +404,7 @@ func (u *UI) submitSlash(sp *slashPick) {
 	c := u.selected
 	host := slashHost{u: u, chat: c.ID, mentions: u.conv.mentions}
 	ctx := &command.Context{Cmd: in.Cmd, Input: trimSpace(txt), Values: in.Values, Chat: c,
-		Reply: u.conv.reply, Backend: u.backend, Now: u.now(), Auto: u.auto, Host: host}
+		Reply: u.conv.reply, Backend: u.backend, Now: u.now(), Auto: u.auto, AI: aiAnswerer{u}, Host: host}
 	if c.IsGroup {
 		ctx.Info = u.chatMembers(c.ID)
 	}

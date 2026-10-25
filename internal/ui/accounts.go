@@ -29,7 +29,7 @@ import (
 
 // appPrefs are the preferences that belong to the app rather than to an
 // account: they carry over when another account opens.
-var appPrefs = append([]string{prefTheme, prefDoodles, prefEnterSend, prefBackground, prefListWidth, prefListHidden, prefZoom,
+var appPrefs = append([]string{prefTheme, prefDoodles, prefWallpaper, prefEnterSend, prefBackground, prefListWidth, prefListHidden, prefZoom,
 	prefPrivacy, prefPrivacyToggle, prefNoCapture, prefVolume, prefVoiceRate, prefEmojiStyle, prefEmojiStill,
 	prefKlipy, prefKlipyKey, prefKlipyID, prefKlipyFavs, prefAutoUpdate, prefEmojiTone, prefAppLock, prefAppLockAfter}, perfPrefs...)
 
@@ -39,6 +39,7 @@ type accountRow struct {
 	active bool
 	pic    string // the saved picture of an account that isn't open
 	bg     bgView // what it does in the background
+	unread int    // its unread chats, for the switcher's badge
 }
 
 // accountRows lists the accounts for the switcher: the linked ones and
@@ -52,7 +53,7 @@ func (h *host) accountRows() []accountRow {
 	for _, a := range l.Accounts {
 		if a.Dir == l.Active || a.Linked() {
 			rows = append(rows, accountRow{Account: a, active: a.Dir == l.Active, pic: l.PicturePath(a.Dir),
-				bg: h.bgView(a.Dir)})
+				bg: h.bgView(a.Dir), unread: h.unreadFor(a.Dir)})
 		}
 	}
 	return rows
@@ -196,9 +197,18 @@ func (h *host) switchAccount(dir string) {
 			return
 		}
 	}
+	// The open account's composer and scroll position wait for it, and
+	// its drafts are shelved under its Dir (drafts_acct.go).
+	oldDir := l.Active
+	if h.u != nil {
+		h.u.stashScroll()
+		h.u.stashDraft()
+	}
+	h.stashAccountDrafts(oldDir)
 	h.closeAccount(b)
 	l.Active = dir
 	h.saveAccounts()
+	h.restoreAccountDrafts(dir)
 	h.useBackend(b, bg)
 }
 
@@ -259,7 +269,7 @@ func (h *host) closeAccount(next model.Backend) {
 		h.u.shutdown()
 	}
 	linked := a.ID != "" && !h.leaving
-	if linked && cur.Background == accounts.Always {
+	if linked && cur.Background == accounts.Always && h.alwaysBudgetOK(cur.Dir) {
 		h.toBackground(cur.Dir)
 		return
 	}
@@ -271,6 +281,7 @@ func (h *host) closeAccount(next model.Backend) {
 	h.b.Close()
 	switch {
 	case !linked:
+		h.dropAccountDrafts(cur.Dir)
 		if err := l.Remove(cur.Dir); err != nil {
 			log.Printf("remove account: %v", err)
 		}
@@ -314,11 +325,8 @@ func (h *host) useBackend(b model.Backend, bg *bgAccount) {
 		h.conn = model.ConnEvent{State: model.StateConnecting, Me: cur.Name, MeID: cur.ID}
 	}
 	h.leaving, h.leaveTo = false, ""
-	// Drafts belong to the account that was open.
-	if h.u != nil {
-		h.u.dropAttachments()
-	}
-	clearDrafts(h.drafts)
+	// Drafts were shelved and restored per account in switchAccount;
+	// the new UI gets this account's (newUI assigns u.drafts).
 	// A background account's notifier goes on, with what it shows.
 	if bg != nil && bg.notes != nil {
 		h.notes = bg.notes
@@ -326,7 +334,7 @@ func (h *host) useBackend(b model.Backend, bg *bgAccount) {
 	} else {
 		h.notes = h.newNotifier(b, h.o.Accounts.Active)
 	}
-	h.openNotes(h.notes)
+	h.openNotes(h.notes, h.o.Accounts.Active)
 	if !running {
 		h.notes.setChats(b.Chats())
 	}
@@ -585,6 +593,17 @@ func (u *UI) accountItem(gtx C, c, mode *widget.Clickable, a *accountRow) D {
 			layout.Rigid(u.label(13, sub, p.TextSecondary).Layout),
 		)
 	}, mark)
+	if a.unread > 0 && !a.active {
+		// The unread badge sits at the row's end, left of the mode
+		// button when there is one.
+		n := a.unread
+		b := record(gtx, func(gtx C) D { return u.badge(gtx, n) })
+		x := dims.Size.X - gtx.Dp(12) - b.size.X
+		if mode != nil {
+			x -= gtx.Dp(36 + 8)
+		}
+		b.at(gtx, x, (dims.Size.Y-b.size.Y)/2)
+	}
 	if mode != nil {
 		x := dims.Size.X - gtx.Dp(12) - gtx.Dp(btn)
 		if tick != nil {
@@ -833,6 +852,7 @@ func (u *UI) accountPage(dir string) []settingsSection {
 	}
 	add(accounts.Always, "Notifies at once")
 	secs = append(secs, modes)
+	secs = append(secs, u.acctPrefSections(dir)...)
 	if a.active {
 		return secs // logged out from the Settings list
 	}

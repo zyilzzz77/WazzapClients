@@ -208,9 +208,9 @@ func (o *chatOrder) height(id string, guess func(id string) int) int {
 func (u *UI) rowHeight(gtx C) func(id string) int {
 	return func(id string) int {
 		if cm := u.inCommunity[id]; cm != nil && cm.Announcements != id {
-			return gtx.Dp(96.5) + gtx.Dp(2)*2
+			return u.densityRowH(gtx, 96.5) + gtx.Dp(2)*2
 		}
-		return gtx.Dp(76.3) + gtx.Dp(2)*2
+		return u.densityRowH(gtx, 76.3) + gtx.Dp(2)*2
 	}
 }
 
@@ -395,7 +395,7 @@ func (u *UI) chatRow(gtx C, c *model.Chat, o rowOpts) D {
 			defer u.hiding(gtx, "row:"+c.ID, click.Hovered() || o.hovered)()
 			hover := u.hoverOn(gtx, click, click.Hovered() || o.hovered)
 			bg := mix(mix(p.Panel, p.Hover, hover), p.Selected, o.sel)
-			h := gtx.Dp(76.3)
+			h := u.densityRowH(gtx, 76.3)
 			text := func(gtx C) D {
 				return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(func(gtx C) D { return u.layoutRowTitle(gtx, c, o.verified) }),
@@ -404,7 +404,7 @@ func (u *UI) chatRow(gtx C, c *model.Chat, o rowOpts) D {
 				)
 			}
 			if cm := o.community; cm != nil {
-				h = gtx.Dp(96.5)
+				h = u.densityRowH(gtx, 96.5)
 				avatar = func(gtx C) D { return u.communityGroupAvatar(gtx, c, cm, bg) }
 				text = func(gtx C) D { return u.layoutCommunityRowText(gtx, c, cm, o.verified, hover) }
 			}

@@ -180,6 +180,19 @@ func (b *Backend) SaveMedia(*model.Message) {
 	b.emit(model.NoticeEvent{Text: "Demo mode doesn't save files."})
 }
 
+// SaveViewOnce is a no-op in demo mode: there is no real view once media.
+func (b *Backend) SaveViewOnce(*model.Message) {
+	b.emit(model.NoticeEvent{Text: "Demo mode doesn't save files."})
+}
+
+// DataDir is the account's data directory ("" in demo mode unless a test
+// sets one).
+func (b *Backend) DataDir() string { return b.dir }
+
+// SetDataDir points the demo backend at a data directory, for tests that
+// read or write account files.
+func (b *Backend) SetDataDir(dir string) { b.dir = dir }
+
 // copyOf returns a copy of the stored message behind m.
 func (b *Backend) copyOf(m *model.Message) *model.Message {
 	return deepCopy(b.find(m))

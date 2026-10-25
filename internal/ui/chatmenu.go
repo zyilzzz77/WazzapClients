@@ -53,6 +53,7 @@ func (u *UI) convMenuItems(c *model.Chat) []menuItem {
 		add(menuItem{key: "timer", glyph: disappearingIcon, label: "Disappearing messages", run: func() { u.openTimerMenu(c) }})
 	}
 	add(menuItem{key: "theme", ic: icPalette, label: "Chat theme", run: func() { u.openChatTheme(c) }})
+	add(menuItem{key: "wallpaper", ic: icPalette, label: "Wallpaper", run: func() { u.openWallpaper(id) }})
 	if c.Favorite {
 		add(menuItem{key: "fav", ic: icHeart, label: "Remove from favourites", run: func() { b.SetFavorite(id, false) }})
 	} else {

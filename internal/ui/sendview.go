@@ -305,7 +305,7 @@ func (u *UI) layoutSendTop(gtx C, f *attachFile, isPhoto bool, h int) {
 	if !isPhoto {
 		name := record(gtx, func(gtx C) D {
 			gtx.Constraints = layout.Constraints{Max: image.Pt(sz.X-gtx.Dp(200), h)}
-			return u.label(15, filepath.Base(f.Path), p.Text, labelOpts{maxLines: 1}).Layout(gtx)
+			return u.label(15, fileSizeLabel(f.Path), p.Text, labelOpts{maxLines: 1}).Layout(gtx)
 		})
 		name.at(gtx, (sz.X-name.size.X)/2, (h-name.size.Y)/2)
 		return

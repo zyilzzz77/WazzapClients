@@ -21,6 +21,13 @@ type wallpaper struct {
 	key  wallKey
 	tile paint.ImageOp
 	size int
+	// img is an uploaded photo wallpaper, decoded once per file.
+	imgFile string
+	img     paint.ImageOp
+	imgSize image.Point
+	// shown is the cached wallpaper of shownFor (wallpaper_store.go).
+	shown    wallChoice
+	shownFor string
 }
 
 type wallKey struct {
@@ -32,7 +39,9 @@ type wallKey struct {
 func (wp *wallpaper) layout(gtx C, bg, doodle color.NRGBA, doodles bool) D {
 	sz := gtx.Constraints.Max
 	if !doodles {
-		*wp = wallpaper{} // lets the tile go
+		// Let the tile go, but keep a photo wallpaper: it draws
+		// through layoutWallImage, not here.
+		wp.key, wp.tile, wp.size = wallKey{}, paint.ImageOp{}, 0
 		fillRect(gtx, image.Rectangle{Max: sz}, bg)
 		return D{Size: sz}
 	}

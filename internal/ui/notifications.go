@@ -55,6 +55,9 @@ type notifier struct {
 	prefix string
 	// account names the account in titles while it's in the background.
 	account string
+	// notifyOff silences this account outright (its per-account
+	// switch in accounts.json, acctunread.go).
+	notifyOff bool
 	// app holds the app's preferences (privacy mode), which only the open
 	// account's backend has up to date; nil reads them from b.
 	app func() model.Backend
@@ -222,6 +225,9 @@ func (n *notifier) flush() {
 
 // wanted reports whether new messages ms in chat id notify.
 func (n *notifier) wanted(id string, c chatInfo, known bool, ms []*model.Message) bool {
+	if n.notifyOff {
+		return false
+	}
 	if isChannelID(id) || id == statusChatID {
 		return false
 	}

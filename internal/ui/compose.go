@@ -743,6 +743,9 @@ func (u *UI) layoutComposerBox(gtx C) D {
 		m := op.Record(gtx.Ops)
 		dims := layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 			layout.Rigid(func(gtx C) D {
+				return u.layoutAISuggestBar(gtx)
+			}),
+			layout.Rigid(func(gtx C) D {
 				ghost := c.replyGhost
 				if ghost == nil {
 					return D{}
@@ -825,6 +828,9 @@ func (u *UI) layoutComposerBox(gtx C) D {
 								return u.iconButton(gtx, &u.conv.emoji, ic, 40, 26, col)
 							}),
 							layout.Rigid(layout.Spacer{Width: 10}.Layout),
+							layout.Rigid(func(gtx C) D {
+								return u.layoutAISuggestButton(gtx)
+							}),
 							layout.Flexed(1, func(gtx C) D {
 								if c.editorElsewhere {
 									// The send view has the editor; this is

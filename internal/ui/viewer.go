@@ -226,7 +226,14 @@ func (u *UI) layoutViewer(gtx C) {
 		{"close", icClose, false, func() { u.closeViewer() }},
 	}
 	if v.viewOnce {
-		tools = tools[len(tools)-1:] // nothing to keep it by
+		// Nothing to keep it by — unless saving view once media is
+		// allowed, when Save joins Close.
+		if u.viewOnceSaveShown(m) {
+			save := tool{"save", icDownload, false, func() { u.saveViewOnce(m) }}
+			tools = []tool{save, tools[len(tools)-1]}
+		} else {
+			tools = tools[len(tools)-1:]
+		}
 	}
 	for _, t := range tools {
 		if u.btn("vw:"+t.key).Clicked(gtx) && !t.off && v.open {

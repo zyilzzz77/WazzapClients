@@ -148,6 +148,10 @@ func (u *UI) layoutConversation(gtx C) D {
 		u.pal = tp
 		defer func() { u.pal = old }()
 	}
+	chatID := ""
+	if c != nil {
+		chatID = c.ID
+	}
 	u.conv.selV = u.conv.selAnim.step(gtx, u.conv.selecting, durGrow)
 	pinned := u.conv.pinned
 	// The send view covers the conversation; once it's all in, the chat
@@ -169,7 +173,7 @@ func (u *UI) layoutConversation(gtx C) D {
 		}),
 		layout.Flexed(1, func(gtx C) D {
 			sz := gtx.Constraints.Max
-			u.conv.wallpaper.layout(gtx, u.pal.ChatBg, u.pal.Doodle, u.doodles)
+			u.conv.wallpaper.layoutChoice(gtx, u.pal, u.wallpaperShown(chatID), u.doodles)
 
 			// The composer floats over the wallpaper; the list ends above it.
 			m := op.Record(gtx.Ops)

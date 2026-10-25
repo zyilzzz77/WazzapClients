@@ -47,6 +47,9 @@ type Backend struct {
 
 	// Running as a background account (see background.go).
 	bg bgState
+
+	// dir is the account's data directory, for tests (DataDir).
+	dir string
 }
 
 // Clock is the time new demo backends read. They date their chats by it

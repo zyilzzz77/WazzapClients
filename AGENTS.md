@@ -1,155 +1,743 @@
-# Fork WazzapClients — Master Prompt untuk AI Agent
+# AGENTS.md
 
-> Cara pakai: fork dulu `Chomosuke9/WazzapClients` ke GitHub lo, clone fork lo, jalankan `sh patches/apply.sh`, lalu paste **Master Prompt** di bawah ini ke AI agent lo (Claude Code / Codex / Cursor / dll). Jangan skip Phase 0.
+> **Fork notes (`feat/ui-ai-multiaccount`, zyilzzz77/WazzapClients).** This fork adds, on top of the upstream guide below: Phase 1 — 7 themes (Light, Dark, Dark OLED true-black, Navy, Forest, Sepia, WhatsApp Green) in `internal/ui/theme.go` + `palettes_*.go`/`theme_resolve.go`, WhatsApp Web colours, density Compact/Comfortable, per-chat + global wallpaper (`internal/ui/wallpaper_*.go`, `photo.Shrink`, off-heap), view-once save (opt-in, Settings > Privacy, OFF by default, `internal/ui/viewonce_save.go` + `internal/wa/viewonce_save.go`), HD status reusing the photo HD path (`internal/ui/status_quality.go`), keyboard shortcuts (`internal/ui/shortcuts.go`); Phase 2 — true multi-account (`internal/accounts/manage.go`/`unread.go`, per-account drafts/scroll in `internal/ui/drafts_acct.go`, max 2 `Always` by default); Phase 3 — provider-agnostic OpenAI-compatible AI in `internal/ai/` (custom BaseURL + API key + model, presets OpenAI/Groq/OpenRouter/Gemini/Ollama/LM Studio/Custom, key in per-account `ai.json` 0600, never logged), `/ai` + `/aisummary`, ✨ smart replies, auto-reply hooked into `internal/auto/ai_hook.go` (ghost mode blocks it). Hard rules for this fork: no WebView/Electron/Chromium; every new/changed file ≤200 lines, every function ≤50 lines; `go vet ./...` and `go test ./...` must pass; see `docs/audit.md`, `docs/ai-setup.md`, `docs/qa-ui.md`, `docs/qa-multiaccount.md`, `docs/qa-ai.md`.
 
----
+Guidance for AI coding agents (and humans) working on this repository.
 
-## MASTER PROMPT (copy-paste dari sini)
+## Project
 
-You are a senior Go desktop engineer. Fork and upgrade this repo, do not start from scratch.
+WazzapClients is a lightweight, native WhatsApp desktop client written in Go.
 
-### 0. Repo truth — read this first, do not assume
+- **UI:** [Gio](https://gioui.org) (`gioui.org`), an immediate-mode GPU UI toolkit.
+  Its text library `github.com/go-text/typesetting` is patched to use less memory, and
+  Gio itself to let go of the pictures it drew: `patches/apply.sh` builds the patched
+  copies in `third_party/typesetting` and `third_party/gio` (not checked in; run it
+  after cloning). See `patches/README.md`.
+- **WhatsApp protocol:** [`github.com/polymorfa/hypermeow`](https://github.com/polymorfa/hypermeow),
+  branch `main`. It is a performance-focused fork of `tulir/whatsmeow` that keeps the
+  upstream package names. Install it with `go get github.com/polymorfa/hypermeow@main`
+  (tagged versions are retracted on purpose). Do **not** use upstream `go.mau.fi/whatsmeow`.
+- **Goal:** look and feel as close to the official WhatsApp Desktop app as possible, while
+  using a small fraction of its memory (no WebView, no Electron).
 
-- Repo: fork of `Chomosuke9/WazzapClients`, module `github.com/chomosuke9/wazzapclients`, Go `1.27.0`.
-- Stack: Go + Gio (`gioui.org v0.10.3`) + `github.com/polymorfa/hypermeow` (performance fork of `tulir/whatsmeow`, branch `main`). **Do NOT use upstream `go.mau.fi/whatsmeow`.**
-- Storage: `modernc.org/sqlite`, messages in local SQLite (`wazzap.db` per account data dir).
-- UI: Gio immediate-mode GPU UI, no WebView, no Electron, no Chromium, no Node, no HTML/CSS/JS. Single Go binary.
-- **First read `AGENTS.md` (58KB, source of truth) in full before writing any code.** Gio is pre-1.0, its API changes between minors. Check `pkg.go.dev/gioui.org` for the pinned version in `go.mod`, and read the actual Gio / hypermeow source when unsure. Do not rely on training-data examples.
-- Gio and go-text are patched: run `sh patches/apply.sh` after cloning. It builds `third_party/gio` and `third_party/typesetting`. **Never edit `third_party/` directly** — change them via `patches/*.patch` only.
-- Entry: `cmd/wazzap/main.go`. Core packages:
-  - `internal/wa/` — `Backend` wrapping hypermeow, `Send(chatID string, d model.Draft)`, media, groups, polls, status, etc.
-  - `internal/model/` — `model.Message`, `model.Draft`, `model.Backend` interface, prefs.
-  - `internal/ui/` — all Gio UI: `app.go`, `conversation.go`, `settings.go`, `theme.go` (`Palette`), `accounts.go`, `slash.go`, `composertext.go`, `scrollbar.go` (`u.scrollList`), `login.go`, `notifications.go`.
-  - `internal/accounts/` — `accounts.go`: `Account{Dir, ID, Name, Phone, Background Mode}`, `List{Active string, Accounts []Account}`, `Load/Save/Add/Remove/Find/Current/Others/Path`.
-  - `internal/auto/` — `auto.go`: `Backend` wraps `model.Backend` for `/schedule` (`prefJobs="auto_scheduled"`) and `/afk` (`prefAway="auto_away"`). It sees every event/message, persists in backend prefs, works with window closed / after restart. Respect ghost mode (`model.PrefGhost`): it refuses user-like sends.
-  - `internal/klipy/` + `internal/ui/gifs.go` — **the pattern to copy for API keys**: key entered in Settings > Extra features, validated against the provider, error shown in UI, never bundled.
-  - `internal/memtrim/`, `internal/offheap/`, `internal/photo/` — memory discipline. Read them before touching images/caches.
+## Rule #1: read the docs before you write code
 
-### 1. Hard constraints (non-negotiable)
+Gio is still pre-1.0. Its API changes between minor releases, and a lot of what you
+remember (blog posts, old examples, training data) is **outdated or removed**. For example,
+the event model moved from `gtx.Events(tag)`/`pointer.InputOp` to `gtx.Event(filters...)`/`event.Op`,
+and `app.NewWindow()` became a zero-value `app.Window`.
 
-1. No WebView2, no Electron, no Chromium, no bundled browser, no web frontend. Keep it native Gio.
-2. Keep idle RAM low. Do not regress upstream idle memory. Keep caches capped, keep `memtrim` behaviour (hand memory back after ~10s idle), keep big pixel buffers off-heap, do not keep all chats/media in memory, paginate / virtualize lists.
-3. No new heavy dependencies. Prefer stdlib `net/http`. No new CGo deps unless justified and optional.
-4. No breaking change to existing single-account data: an install with one account must keep working, same data dir, same `accounts.json`, same `wazzap.db`.
-5. No secrets in git, logs, or screenshots. API keys are never logged, never printed, never sent anywhere except the user-configured AI endpoint.
-6. No telemetry, no proxy server, no third-party server of ours. The app talks directly: WhatsApp via hypermeow, AI via the user's endpoint only.
-7. Keep existing tests passing: `go vet ./...` and `go test ./...` must pass. Add tests for every new package / behaviour. Follow existing test style in `internal/ui/*_test.go`, `internal/wa/*_test.go`, `internal/auto/*_test.go`.
-8. Work in small, reviewable commits, one phase at a time. Do not rewrite the whole UI in one commit. After each phase, report: what changed, files touched, how to test manually, measured idle RAM / startup time before vs after.
+**Every time you write or change code**, first check the current documentation for the
+APIs you are about to use:
 
-### 2. Phase 0 — Audit first (do this before any feature code)
+1. The version pinned in `go.mod` is the source of truth. Read the actual source when
+   you're unsure: Gio is `third_party/gio` (`gioui.org@<version>` from the module cache
+   plus `patches/gio.patch`) and go-text `third_party/typesetting` (upstream plus
+   `patches/typesetting.patch`). Change them through the patches, not in `third_party`,
+   which `apply.sh` overwrites.
+2. API reference: https://pkg.go.dev/gioui.org (pick the version that matches `go.mod`).
+3. Guides:
+   - Learn: https://gioui.org/doc/learn/get-started, https://gioui.org/doc/learn/split-widget,
+     https://gioui.org/doc/learn/common-errors
+   - Architecture: https://gioui.org/doc/architecture/window, `/drawing`, `/input`,
+     `/widget`, `/layout`, `/theme`, `/units`, `/text`, `/color`
+4. Official examples: https://git.sr.ht/~eliasnaur/gio-example
 
-Audit and report in `docs/audit.md` (create it):
-- How account switching works today: `internal/ui/accounts.go` (`host.switchAccount`, `reqSwitch`, `reqAddAccount`, `setAccountMode`, `layoutAccountMenu`), `internal/accounts` modes `Off=0`, `Always=-1`, `Checks=[5,15,30,60]` minutes. What happens to the open `wa.Backend`, drafts, notifications, and background accounts on switch?
-- How `internal/wa.Backend` connects, reconnects, and emits events. Where is the single place to intercept incoming messages for AI / auto-reply?
-- How settings are stored (`model.Pref`), how Settings > Extra features is structured, and how KLIPY key is stored/validated — reuse that exact pattern for AI keys.
-- How slash commands work in `internal/ui/slash.go` and how `/schedule` / `/afk` are wired through `internal/auto`.
-- List the 10 biggest UI/UX gaps vs official WhatsApp Desktop (layout, density, empty states, loading, search, keyboard, accessibility) with file locations.
-- Do not change behaviour in Phase 0. Stop and show the audit for approval before Phase 1.
+The same applies to hypermeow: check its source, README, and the
+[pkg.go.dev reference](https://pkg.go.dev/github.com/polymorfa/hypermeow) instead of assuming
+upstream whatsmeow behavior. The fork adds and changes APIs (LID-first identities, and more).
 
-### 3. Phase 1 — UI/UX upgrade (Gio only)
+Gotchas already found in the pinned version (v0.10.x):
 
-Goal: look and feel closer to official WhatsApp Desktop, more polished, faster to use — without adding RAM.
+- `layout.N`/`layout.S` clear only `Min.Y` and `layout.E`/`layout.W` only `Min.X`. Only
+  `Center` and the corners clear both. Reset `Min` yourself if the child must shrink-wrap.
+- Gio blends colors in linear space, so a translucent overlay looks much stronger than the
+  same alpha in CSS. For subtle tints (wallpaper doodles), pre-mix an opaque sRGB color.
+- `widget.Icon` caches only its last size and color. Icons come from `internal/ui/icon`
+  instead, which caches a rasterized image per size and color.
+- If a dependency fails to compile in a way upstream can't (e.g. an import cycle), run
+  `go mod verify`. The module cache was once modified locally (probably by an IDE
+  auto-import); delete that module version from `GOMODCACHE`, re-download it, and
+  `go clean -cache`.
+- Text rendering supports bitmap color-emoji fonts (CBDT/sbix) but not COLR fonts such as
+  Windows' Segoe UI Emoji, which renders monochrome. Noto Color Emoji (CBDT) isn't
+  bundled (10.7 MB): `emojiset.FontPath` downloads it on first run (SHA-256 pinned),
+  `LoadEmojiFont` maps it copy-on-write (`internal/mapfile`), and `refreshEmoji` loads it
+  into a new shaper when it arrives. Tests, `cmd/screenshot` and `cmd/memprobe` load the
+  copy in `internal/ui/testdata`.
+- The shaper never switches fonts for a space, so a space after an emoji takes the emoji
+  font's (very wide) advance. `narrowEmojiSpaces` in `internal/ui/fonts.go` patches the
+  emoji font's space glyphs at load time.
+- `layout.Flex` passes its cross-axis minimum to every child. Giving a row a minimum
+  height stretches its labels and pins their text to the top. Use `vcenter`
+  (`internal/ui/draw.go`) to make a row taller.
+- A `Flexed` child must return the full width it was given. If it returns less, the
+  `Rigid` children after it move left (see how `layoutListItem` applies `padRight`).
+- `layout.Center` doesn't center a child that is larger than the box; it places it at
+  0,0. Record the child and position it yourself.
+- `LineHeightScale` defaults to 1.2 and multiplies `LineHeight`. Set it to 1 when you
+  want an exact line height.
+- `widget.Clickable` clips what it draws to its own size, so a badge or ring that sticks
+  out past a button gets cut: draw it after the Clickable (see `railButton`).
+- `widget.Clickable` registers its input area after drawing its content, so a Clickable
+  wrapping a widget hides any Clickable inside it. Draw nested buttons afterwards, on
+  top (see `layoutChatRow`), and use `hoverArea`/`rightClick`, which pass events through.
+- Popups that must draw above later siblings (the emoji picker) use `op.Defer`, which
+  keeps the local transform. Context menus instead open at `u.mouse`, the last pointer
+  position in content coordinates. Inside a popup drawn under a transform (the emoji
+  picker over the composer) `u.mouse` is in the wrong coordinates: track the pointer
+  there yourself, as the picker's `panelMouse` does for its tone menu.
+- `widget.Editor` paints all its text, and its caret, in one color and one font. When the
+  composer's text has formatting or @mentions, the editor paints it transparent and
+  `paintComposerText` (`composertext.go`) draws the text and caret itself. Bold and italic
+  are faked (outline drawn twice, slant) so glyphs keep the advances the editor's caret
+  and selection use. Color-emoji bitmaps ignore the text color, so the editor still
+  paints them. `Editor.Regions` reuses the slice you pass it, so don't use it to append.
+- Gio makes only its window thread DPI aware on Windows. While a drag holds the mouse
+  capture, Windows then reports the pointer in DPI-unaware coordinates (divided by the
+  display scale), so every dragged thing lagged the pointer. `dpi_windows.go` makes the
+  whole process per-monitor aware at init.
+- `material.List`'s scrollbar turns thumb drags into "scroll by N items" against a length
+  re-estimated from the visible rows, so the thumb drifts from the pointer. Use
+  `u.scrollList` (`internal/ui/scrollbar.go`) for every list.
+- Gio's shaper keeps up to 1000 color-emoji bitmaps decoded at the font's full 136x128
+  (70 KB each) for good. The emoji picker draws its emojis as pictures from
+  `u.emojiImgs` instead (`emojiimg.go`); scrolling it through Labels pinned ~70 MB.
+  Message text does the same through styledtext's `Bitmap` hook (`textEmoji`), and
+  labels through `hookLabel` (`label.go`, Gio's `widget.Label` with that hook;
+  `labelEmoji`).
+- Gio's renderer kept pointing at the pictures of its busiest frame (a truncated
+  slice), so they stayed in the heap after they were gone from the screen.
+  `patches/gio.patch` clears it. Each MB of animated emoji frames costs about 1 MB
+  besides (its GPU copy, in system memory with integrated graphics), so
+  `emojiAnims.endFrame` trims memory after letting go of many.
+- Live heap raises the GC's target: at a GC percent of 200 every MB kept in the heap
+  lets 2 MB more of garbage pile up before a collection. Animated emoji sheets
+  (64 MB at most) took the app past 600 MB that way. Big pixel buffers kept a while
+  go outside the heap (`offheap.NewRGBA`, freed by a cleanup once the picture is
+  unreachable); never keep their `Pix` without the picture. Decoding an emoji
+  makes about 1.5 MB of garbage a frame inside `x/image/webp` (90 MB an emoji),
+  so each decoded sheet is kept on disk, compressed, in `<data>/emoji/sheets`
+  (`emojiset.WriteSheet`, at most 256 MB, the sheets read longest ago going first)
+  and read from there the next time (`ReadSheet`, offheap).
+- Gio gives every `paint.ImageOp` a GPU texture of its own (mipmapped) and frees it
+  after a frame without it. Don't play precomputed frames as an ImageOp each: every
+  frame change made and freed a texture, thousands a second for a message of
+  animated emojis, and the graphics driver's memory grew by gigabytes. An animated
+  emoji's frames are cells of one sheet, drawn a cell at a time (`drawEmojiAnim`).
+- `x/image/draw`'s `CatmullRom` allocates dst width x src height x 32 bytes (157 MB to fit
+  a 12 MP photo to a screen). Downscale with `photo.Shrink` (`internal/photo`). Go's JPEG decoder
+  keeps all of a progressive JPEG's coefficients (~7.5 bytes/pixel), so big pictures
+  decode one at a time (`acquireDecode`).
+- Animated stickers (`/sticker` of a video, GIF or animated WebP) are encoded by the
+  system's ffmpeg, found on PATH and never bundled: lossy VP8, all that fits an
+  animation in WhatsApp's 500 KB, needs libwebp (cgo). ffmpeg decodes videos and GIFs
+  as PAM frames, which carry their size (ffmpeg turns phone videos upright); animated
+  WebP is decoded here, since ffmpeg before 8.0 can't. Text is drawn on every frame in
+  Go. The first 6 seconds get 90 frames, at most 30 a second, composed once into a
+  temporary file that ffmpeg encodes at the best quality under 1 MB (`search`). Its
+  `-compression_level 6` took 14 times as long as 4 for 2% less.
+- `golang.org/x/image/webp` can't read animated WebP. Animated stickers go through
+  `internal/webpanim`; `stickerFrame` (`player.go`) plays the ones on screen.
+  GIFs are MP4s: `gifFrame` (`gifplayer.go`) plays the ones on screen in their bubbles,
+  muted and looping (`Player.SetLoop`), at most `maxGIFs` at once.
+- Videos use the OS's decoder, never a bundled codec (`internal/video`). The Windows
+  backend calls COM through `syscall.SyscallN` without cgo: convert pointers to
+  `uintptr` inside the `SyscallN` argument list, and read `double` results from `r2`
+  (Go returns XMM0 there). Media Foundation's memory goes back only with `MFShutdown`,
+  so each player starts and shuts it down. The viewer's video UI is `videoview.go`;
+  `WAZZAP_DEMO_VIDEO=<file.mp4>` makes `-demo` play that file.
+- `f32.Rectangle` no longer exists. `image.Rect` normalizes swapped corners, so build an
+  `image.Rectangle{Min: ..., Max: ...}` literal when `Max` is computed from `Min`.
+- `gtx.Disabled()` blocks `gtx.Execute` too, so a disabled context can't ask for the
+  next frame. Step animations with the enabled context before disabling it.
+- A disabled context still registers its input areas, and Gio hit-tests them: they
+  read no events but block every handler underneath. Draw anything fading away with
+  `fadeOut` (`anim.go`), which also pushes a `pointer.PassOp`.
+- A `ScrollToEnd` list drops a trailing child of height 0 when it trims to the
+  viewport, then stops following the end. Rows that grow in start at 1px.
+- `paint.PushOpacity` draws into an offscreen texture that Gio keeps, at the largest
+  size ever needed, until the window closes. A fade of the whole window would pin
+  ~16 MB. Keep opacity layers small (see Animations).
+- Gio stencils every path over its whole bounding box, every frame, into a coverage
+  texture that, like the opacity one, never shrinks. A rounded clip around big content,
+  or a big `clip.RRect` fill, costs a screen-sized texture. Fill rounded rectangles with
+  `fillRRect`/`paintRRect`, which only stencil the corners, and round a big panel's
+  corner with a mask (`roundCorner`) instead of clipping it.
+- Gio blends every pixel of every draw, even one an opaque draw covers later. On a
+  2560x1600 window at 165 Hz with integrated graphics a full-window fill takes about
+  0.2 ms of every frame, and frames used to fill each pixel almost four times. Don't
+  paint a background under something opaque: the card around the panes has none,
+  the wallpaper's tile has its background in it, and list rows on the panel paint
+  nothing at rest (`rowBg`).
+- Task Manager's GPU % follows the GPU's clock, which drops with the load, so it
+  barely moves when a frame gets cheaper. Measure the GPU time per frame with the
+  `\GPU Engine(pid_<pid>_*engtype_3D)\Running Time` counter (100 ns units) during a
+  `memprobe -scroll` run. Gio presents through a blt-model swap chain, so DWM copies
+  and composes every frame (about as much GPU time again).
+- Gio's window thread waits for the UI goroutine while it delivers an event. Never
+  `SendMessage` to the window from the UI goroutine (it hangs both); post instead,
+  as `desktop.SetWindowIcon` does. `Window.Perform` and `Window.Option` wait for the
+  window thread too: outside a frame (a tray or notification request), call them on
+  a goroutine of their own, as `host.show` raises the window.
+- WinRT interfaces are called through vtables (`internal/notify`). Don't trust
+  remembered IIDs: one wrong digit is E_NOINTERFACE. Windows PowerShell 5.1 reads the
+  real ones and the method order from the system metadata, e.g.
+  `[Windows.UI.Notifications.ToastNotification].GetInterfaces() | % { $_.FullName + " " + $_.GUID }`
+  after loading the type with `, Windows.UI.Notifications, ContentType = WindowsRuntime`.
+- Gio keys a path's GPU data by where the path was recorded, so a `clip.RRect`,
+  `clip.Ellipse` or `clip.Path` built into the frame's ops is tessellated and uploaded
+  to a new GPU buffer every frame. Shapes from `roundShape` (`memo.go`) are recorded
+  once per size and drawn anywhere; `fillCircle` and `paintRRect` use them.
+- Don't set a Go memory limit (`SetMemoryLimit`/`GOMEMLIMIT`). Once a long session's
+  live heap nears it, the GC runs back to back on several cores, and scrolling the
+  chat list went from ~5 to ~100 s of CPU (`memprobe -scroll 1200 -ballast 60`).
+- A rectangle clip under a transform that isn't a whole-pixel offset becomes a path
+  too, and text outlines are rebuilt. `moveBy` rounds to whole pixels; `pushFx` counts
+  real scales in `fxDepth`, under which `paintRRect` draws one path (no seams).
+- Gio's shaper caches every bitmap glyph's decoded picture, and the drawing of whole lines
+  of them, for good. The 3D emoji style swaps the emoji font's pictures through
+  `Font.BitmapHook` (a go-text patch) and gives the UI a new shaper when the style
+  changes or pictures arrive (`refreshEmoji`, `emojistyle.go`). Emojis in message
+  text and labels are drawn by bitmap hooks (`styledtext`'s `TextStyle.Bitmap`,
+  `hookLabel`'s) instead of the font, animated or still; a glyph's face is the top 16 bits of its `text.GlyphID`.
+- Gio clips a color-emoji bitmap to the bitmap's own size (about 136x128) before
+  scaling it to the font size, so above ~109 px only its top left corner shows. The
+  photo editor lays text and emoji out at most `markTextPx` tall and scales them up.
+- Key events go to whoever asks for them first in a frame. `updatePaste` reads Ctrl+V
+  before the composer does: files or a picture on the clipboard (`internal/osclip`)
+  open the send view, and anything else is handed back with `clipboard.ReadCmd`.
+- The slash command picker reads Up, Down, Tab and (when it picks) Enter before the
+  composer does, in `slashKeys`, and only while it offers rows; otherwise the editor
+  moves its caret with them as usual. In a command's text that takes @mentions
+  (`Option.Mentions`, /schedule's message) the mention picker shows instead, and it
+  takes Enter first (`slashTakesMentions`).
+- hypermeow doesn't parse a group's `<general_chat/>` (a community's General chat).
+  `markGeneralChats` (`internal/wa/communities.go`) asks for the joined groups again
+  through `DangerousInternals().SendGroupIQ` on connect and reads it from the raw nodes.
+  Run the app with `-debug` to see raw nodes in `wazzap.log` when something is missing.
+- WhatsApp now sends most message edits as a `secretEncryptedMessage` (MESSAGE_EDIT),
+  decrypted with `DecryptSecretEncryptedMessage`, not as a `protocolMessage`. History
+  sync (`ParseWebMessage`) hands an edit out as the new content under the original's
+  ID with `IsEdit` set. `parse` turns all three into an edit; `putMessage` never lets
+  the original coming again overwrite an edited text.
+- SQLite uses a partial index only when the query's WHERE repeats its condition: it
+  can't tell that `media IN (?, ?)` or `media = ?` means `media != 0`, and read every
+  message for the Media panel until `galleryWhere` said so. A sort also reads every
+  column it returns of every row it sorts, so the gallery sorts rowids alone and reads
+  the page's rows after (each one's payload is decoded).
+- modernc's SQLite binds every statement of a multi-statement `Exec` from the first
+  argument, so positional `?` in a second statement gets the wrong values. Use
+  numbered `?1`, `?2` (as `deleteChat` does) or separate `Exec` calls.
+- History sync sends system messages ("Alice added Bob") as stubs: a `WebMessageInfo`
+  with `MessageStubType` and `MessageStubParameters` and no message, which
+  `ParseWebMessage` drops. `onHistory` reads them first (`historyStub`), and live group
+  notifications, pins, timers and security code changes become the same stubs
+  (`internal/wa/system.go`). `WebMessageInfo.key` is a required proto2 field, so a stub
+  stored alone needs `AllowPartial` both ways, or it marshals to nothing.
+- Poll votes and event answers are encrypted with the poll's or event's message
+  secret, which hypermeow stores as messages arrive. It decrypts votes
+  (`DecryptPollVote`) but not event answers; `decryptEventResponse` (`internal/wa/polls.go`)
+  does those the same way. hypermeow can't send an event answer (it has no stanza
+  type for it), so the app shows answers but doesn't send them. Your own votes are
+  stored under `meVoter`, since they come from your phone number or your LID.
+- A group's delivery receipts mostly come grouped: a `<receipt>` without a participant,
+  holding `<participants message_id="…">` with a `<user jid t type="delivery|read|inactive"/>`
+  each. hypermeow reads the ID from a `key` attribute and gives every user the receipt's
+  own type, so Message info missed most of a group. `groupedReceipts`
+  (`internal/wa/receipts.go`), the client's `RawNodeHandler`, reads them itself and passes
+  the node on without its users, which hypermeow still acks.
+- WhatsApp sends view once media only to the phone. Linked devices get a stanza with
+  `<unavailable type="view_once"/>` and no ciphertext, which hypermeow hands out as an
+  `events.UndecryptableMessage`; `onUndecryptable` stores it as a `KindViewOnce`
+  placeholder (`OnPhone`). A reply quoting it often carries its media key, and
+  `fillViewOnce` gives the placeholder that media. While one is shown the window is kept
+  out of screenshots (`desktop.BlockCapture`, `SetWindowDisplayAffinity` posted to the
+  window's thread through the drop target's subclass).
+- Any other `events.UndecryptableMessage` (unless its sender marked it `decrypt-fail="hide"`)
+  is stored as a `KindWaiting` placeholder, "Waiting for this message". hypermeow sends a
+  retry receipt, and the decrypted copy that comes back under the same ID replaces it in
+  `putMessage` (and counts as new then); one that shows nothing drops it (`dropWaiting`).
+- Status privacy is the `status_privacy` app state action (regular_high, index
+  `["status_privacy"]`): a mode, the people of that mode's list only, and every
+  audience of your own (`customLists`, the chosen one `isSelected`). The other
+  modes' people are kept in `wz_meta` from the actions that named them, and a
+  change is sent as a whole new action built on the last one
+  (`internal/wa/statusprivacy.go`). A phone that never changed it syncs none:
+  once app state synced in full, the server's list (`GetStatusPrivacy`) stands
+  for it. Hiding a contact's statuses is `userStatusMute` (`["userStatusMute",
+  jid]`). WhatsApp Web takes a mutation of any version up to the newest it
+  knows, so the versions sent stay low.
+- hypermeow sends a status to the list WhatsApp's server keeps (`GetStatusPrivacy`),
+  not to the synced setting, and can't be given recipients. `statusAudience`
+  refuses to post when anyone outside the chosen audience would get it, and
+  labels close friends and custom audiences (`ContextInfo.statusAudienceMetadata`,
+  which viewers show as a chip on the picture). WhatsApp shows the statuses of
+  saved contacts only (`savedContact`).
+- Keep in chat is a `KeepInChatMessage` (kept in `wz_messages.kept`; history sync says it
+  in `WebMessageInfo.keepInChat`). WhatsApp reports go only from the phone: hypermeow has
+  no call for them, so Report asks and offers to block (`confirmReport`).
+- Websites send WhatsApp links (wa.me, api.whatsapp.com) on to `whatsapp://send?phone=…`
+  and invites to `whatsapp://chat?code=…`; Windows starts the scheme's handler with the
+  link as the last argument. Apps can't make themselves the default: Windows keeps the
+  choice in a hash-protected `UserChoice` (24H2: `UserChoiceLatest`) key. Settings >
+  General, or the bar above the chat list that asks like a browser that isn't the
+  default (`layoutLinkBar`), registers the app (`desktop.RegisterLinks`) and, when another app has the
+  scheme, opens `ms-settings:defaultapps?registeredAppUser=WazzapClients`. The link waits
+  in `host.link` until the account is online, since it needs a lookup.
+- Files dropped on the window come through an OLE drop target (`desktop.EnableDrop`).
+  OLE wants it registered on the window's own thread, so the window is subclassed and
+  the registration posted to it; the callbacks run on that thread and only queue.
+- The server refuses native flow button answers (`InteractiveResponseMessage`) in groups
+  with error 479. `PressButton` falls back to the older answer (`TemplateButtonReplyMessage`
+  or `ListResponseMessage`), which still carries the button's or row's ID that bots read,
+  and only then to a quoted text reply. A `single_select` button, or a `ListMessage`'s,
+  is a `model.ButtonList` whose rows open in a dialog (`internal/ui/listpick.go`).
+- `widget.Clickable.Layout` reads and drops the clicks nobody has asked about yet.
+  Check `Clicked` before laying the button out (the title bar's privacy button).
+- Many buttons act on their click while they're laid out, after parts of the window
+  that show the change were drawn. `updateMouse` asks for one more frame after every
+  press and release, or those parts waited for the pointer to move;
+  `TestClickRedraws` clicks all over the demo window to check.
+- A new link's app state sync (pins, mutes, archives) comes before the chats'
+  history. `setField` creates a chat it doesn't have yet (unlisted until it has
+  messages) and marks the setting in `wz_chats.settled`, so the history's older
+  copy (`setMeta`) doesn't undo it. Reading on the phone with read receipts on comes
+  as a plain read receipt from your own device, not `read-self`.
+- A connected client that sends presence "available" shows you online and stops the
+  phone from notifying. The open account sends it as it connects (`sendPresence`); a
+  background account sends "unavailable" (`SetBackground`).
+- What a backend runs after it connects (group names, the app state resync, channels)
+  reads the database. Started with `goWork`, it's what `Close` cancels and waits for:
+  a `meta` read from a closed database reads as "", which started the once-only app
+  state resync over. A check closes its backend seconds after connecting.
+- GIF search follows KLIPY's integration requirements (docs.klipy.com): requests and
+  media loads go from the app straight to KLIPY with the app key in the URL (it isn't
+  a secret, but release builds get it from the `KLIPY_KEY` secret through
+  `-X main.klipyKey`), never through a proxy or cache of ours; results show in the
+  order they come; the search box says "Search KLIPY" and the tab shows "Powered by
+  KLIPY". Ads aren't shown, so keys must have them off. WhatsApp's GIFs are MP4 videos
+  with `gifPlayback`, and `gifAttribution` KLIPY credits it (`model.Attachment.Klipy`).
+  `Pref` reads the database, so the tab's preferences are read once (`loadGIFPrefs`).
+  KLIPY allows keeping slugs but not media without its approval: favourites are slugs
+  loaded through Items, and Recent is KLIPY's own list (Share adds to it). Search
+  results' slugs end in "--…", which Recent and Items leave off: compare with
+  `klipy.BaseSlug`, and send KLIPY the slug as it came.
 
-- Keep the 3-pane layout (rail / chat list / conversation). Polish, do not redesign from zero:
-  - Chat list: clearer unread badges, mute/archive/pin states, avatar initials + photo, last-message preview with sender, timestamp, ticks, typing indicator. Keep virtualized scrolling via `u.scrollList`, never render all rows.
-  - Conversation: cleaner bubbles, better spacing/typography, quote/reply rendering, reactions, link previews, date separators, day jumps. Improve empty state, loading skeleton, and error/failed-send states.
-  - Composer: keep formatting toolbar, @mentions, emoji/sticker/GIF picker. Improve focus, Enter to send / Shift+Enter newline, draft preserved per chat and per account.
-  - Add density setting Compact / Comfortable, font scale (keep existing 80–200%), Light / Dark / System theme via `internal/ui/theme.go` `Palette`. Add design tokens there, do not hardcode colours in widgets.
-  - Add keyboard shortcuts and show them in menus: `Ctrl+K` search, `Ctrl+N` new chat, `Ctrl+1..9` switch account, `Ctrl+Shift+M` mute, `Esc` close dialog / clear search. Add a searchable Settings (reuse existing settings search).
-  - Improve notifications + tray: notification shows account name + sender, Reply / Mark as read on Windows, tray icon shows total unread across accounts.
-  - Performance in UI: follow `AGENTS.md` gotchas — use `internal/ui/icon` (not `widget.Icon`), `fillRRect` / `paintRRect` (not big `clip.RRect`), `memo.go` `roundShape`, avoid whole-window opacity layers, avoid `paint.ImageOp` per animation frame, use `photo.Shrink` for downscaling, keep emoji bitmap handling as in `emojiimg.go` / `styledtext`.
-- Acceptance: `go run ./cmd/wazzap -demo` runs, all existing UI tests pass, no new WebView dep, manual QA checklist in `docs/qa-ui.md`.
+If a doc and the source disagree, trust the source for the pinned version. If you bump a
+dependency, re-read the changelog and fix any deprecations in the same change.
 
-### 4. Phase 2 — True multi-account
-
-Current state is partial: several accounts can be linked, but only one is open at a time; others are `Off`, `Always`, or periodic check. Upgrade it to true multi-account:
-
-- Account manager: add / remove / rename / reorder accounts, each with avatar, name, phone, unread count. Stored in `internal/accounts` (`accounts.json`, per-account dir `""` for first account, `accounts/<n>` for later ones — keep this scheme).
-- Fast switching: switch account without full app restart, preserve drafts per chat per account, preserve scroll position where cheap. Switching must be <1s for a linked account.
-- Simultaneous mode (opt-in per account): `Background = Always` keeps that account connected in background; `Off` disconnects when not open; periodic `Checks` connects, syncs, then disconnects. Enforce a memory budget: max 2 `Always` accounts by default (configurable), background accounts must not keep chat history / media decoded in memory, run `memtrim` after switch.
-- Unified signals: rail/sidebar account switcher with per-account unread badge, total unread in tray + taskbar, notifications labelled with account name, notification click opens the correct account + chat.
-- Isolation: each account has its own `wazzap.db`, session, prefs, AI config, and media cache. Never leak messages, contacts, or drafts across accounts. Logout of one account must not touch others. `Remove` deletes only that account's dir (keep root-dir rule in `accounts.go`).
-- Per-account settings: background mode, notifications on/off, AI on/off + AI config (see Phase 3) are per-account, with a global default.
-- Acceptance: 2 accounts linked, switch A→B→A, send from each, background `Always` account receives a message while B is open and shows badge + notification with correct account label, idle RAM with 2 accounts measured and reported, `go test ./internal/accounts/... ./internal/ui/...` passes.
-
-### 5. Phase 3 — AI agent integration (custom provider, custom key, custom endpoint)
-
-Goal: provider-agnostic, OpenAI-compatible AI. User brings their own key + endpoint + model. No hardcoded provider, no hardcoded key.
-
-**5.1 New package `internal/ai/` (create it, do not scatter AI code in `ui/` or `wa/`)**
+## Layout
 
 ```
-internal/ai/
-  config.go    // AIConfig, ProviderPreset, validation, storage (0600 file, see 5.2)
-  provider.go  // Provider interface, OpenAI-compatible client
-  client.go    // net/http, timeouts, SSE streaming, retries, error mapping
-  agent.go     // Agent: system prompt, context builder, tools/actions
-  agent_test.go
-  provider_test.go // httptest fake OpenAI-compatible server, no network
+cmd/wazzap/        desktop app entry point (-demo for fake data, -debug for protocol logs)
+cmd/screenshot/    headless renderer that writes UI previews to PNG (for docs and review)
+cmd/memprobe/      Windows memory benchmark: clicks through stored or demo chats, prints memory;
+                   -scroll scrolls instead and prints frame times and the frame rate
+cmd/winres/        draws the app icon (icon.App) into the .exe's resources and installer/wazzap.ico;
+                   run `go generate ./cmd/wazzap` after changing the icon, and commit both
+cmd/signrelease/   signs a release's SHA256SUMS with the update key (CI), or makes a new key
+cmd/mkpatch/       makes a release's update patches (bsdiff) from older releases' executables
+                   (CI); a module of its own, so the app doesn't link its bsdiff
+cmd/notices/       writes THIRD_PARTY_NOTICES.md from the licenses of what cmd/wazzap links
+                   and bundles; CI runs it with -check
+installer/         the Windows installer (Inno Setup), per user in %LocalAppData%\Programs
+internal/model/    Chat/Message/Event types and the Backend interface the UI talks to
+internal/ui/       Gio UI: login/QR, nav rail, pages (chats, status, channels, communities,
+                   settings), conversation and composer (an album's pictures as one grid in
+                   album.go), contact/group info panel (a person's
+                   or business's sections in contactinfo.go), and the
+                   overlays: context menus (popup.go), dialogs and toasts (dialog.go), emoji
+                   picker (emoji.go, data in the generated emojidata.go; skin tones, a tone button and
+                   a right click's menu, in skintone.go, the emojis that take one in emojitones.go; its GIF tab, which
+                   searches KLIPY, in gifs.go: an extra feature, but on by default, with a key of the user's own
+                   or the build's; Trending, Recent (KLIPY keeps it by customer ID) and
+                   Favourites, kept as slugs; its animated WebP previews play through
+                   the stickers' players, `previewFrame`, with a cap of their own), media viewer
+                   (viewer.go) and the volume slider of videos, statuses and voice
+                   messages (volume.go, an app preference); the send view for picked, pasted and dropped files
+                   (sendview.go), its photo editor (mediaedit.go) and the rendering of
+                   edits and the send queue (editrender.go); replies, @mentions and
+                   select mode live in compose.go; editing your messages (in the composer)
+                   and the Edit history dialog in edit.go; Message info (who got and read
+                   one of your messages, and when; it takes the info panel's place) in
+                   msginfo.go; profile pictures and their placeholders (a person's initial
+                   on a color from their ID, a General chat's speech bubble) in avatar.go; link previews, in bubbles and
+                   over the composer, in linkpreview.go; drafts (what a chat's composer
+                   and send view held when another chat opened, and the list's "Draft:")
+                   in draft.go;
+                   document cards and the voice/audio player in files.go; recording a voice
+                   message (the composer's mic: the recording bar, pause and play back, send)
+                   in voicerec.go; polls (voting by
+                   clicking an option), maps, shared contacts and events as cards in bubbles
+                   in cards.go, and a poll's votes or an event's answers (the Message info
+                   panel's other mode) in votes.go; selecting message
+                   text in textsel.go; searching a chat's messages (the panel that takes the info
+                   panel's place) and a group's members in chatsearch.go; the chat list's
+                   search (chats, archived ones too, contacts and every chat's messages) in
+                   listsearch.go; custom lists as filter chips and New list in lists.go, the chip row,
+                   with unread counts and a ▾ for those that don't fit, in chips.go; Select chats (the ⋮ menu: checkboxes
+                   and a bar of bulk actions) in selectchats.go; App lock (a salted PBKDF2
+                   hash in the prefs, the lock screen, auto-lock; shared by the host's UIs)
+                   in applock.go; the composer's
+                   formatting toolbar in formatbar.go; the attach
+                   menu (Camera through internal/camera, New sticker as /sticker), file tray and poll
+                   dialog in attach.go, and its Create event dialog in eventnew.go; slash commands (their
+                   picker over the composer and the notes only you see) in slash.go; emoji
+                   shortcodes (":mo" offers matching emojis over the composer, a typed
+                   ":moai:" becomes 🗿, Discord style) in shortcode.go; scheduled
+                   messages as bubbles after a chat's newest (send now, edit, cancel) and
+                   the AFK bar above the chat list in scheduled.go; saved messages (Settings >
+                   Snippets, the snippets /snippet send offers in the slash picker, their {variables}
+                   and /catch's payload dialog) in snippets.go; and
+                   the Extra features settings page in extras.go (the app's own features,
+                   such as slash commands, @admin, the Privacy mode toggle, Block screen
+                   recording and Raw photos: each off until turned on), and
+                   its Ethically gray features page (Edit history, Keep deleted messages, Replay view
+                   once, and commands marked Gray, like /ghost, each with a switch of its own);
+                   the Performance settings (switches for animations, smooth scrolling and
+                   GIF/sticker autoplay, and an Advanced page of memory and CPU knobs with
+                   live memory numbers; app prefs kept in the package's `perf`) in perf.go;
+                   view once messages (opened once, screenshots blocked) in viewonce.go; posting your own status
+                   (its menus, the text composer, photos through the send view) in statuspost.go;
+                   Status privacy (the audiences, one chosen; an audience's people; an audience of
+                   your own's name and emoji, sliding in over the Status list like New chat) and
+                   a contact's Hide/Unhide menu in statusprivacy.go; the Status list's Hidden
+                   section (contacts you hid) in status.go;
+                   animation helpers in anim.go; the "N unread messages" divider a chat
+                   opens at in unread.go; the round React and Forward buttons beside a
+                   hovered message (React opens the reaction bar alone) in sidebuttons.go;
+                   the ⌄ button that goes back to the newest message
+                   (with the unread count) and the day pinned at the top while a chat
+                   scrolls in scrolldown.go; system messages ("Alice added Bob", missed
+                   calls: grey chips down the middle) in system.go; group invite links (the dialog that joins
+                   one) in invite.go; WhatsApp's links (wa.me, api.whatsapp.com/send,
+                   whatsapp://send and whatsapp://chat: a number's chat with the link's
+                   text in the composer, or the invite dialog; and those the server
+                   resolves, `Backend.ResolveLink`: a channel, shown in the invite dialog
+                   to follow, a business's wa.me/message link and a contact's wa.me/qr
+                   link), clicked in a message or handed over by Windows, in applink.go; a community's announcements (cards down the
+                   middle headed by their sender, a forward button beside them, and
+                   "Only community admins can send messages" for members) in announce.go;
+                   chat actions shared by menus and info panels (mute choices, lists,
+                   clear/exit/delete confirms) in chatactions.go; the open chat's ⋮ menu and
+                   the settings it shares with the info panel (disappearing timer, chat
+                   theme, encryption code, Add member, invite link) in chatmenu.go; the
+                   info panel's own pages (starred messages, group permissions, member
+                   changes) in infopages.go; editing a group's name and description in
+                   place and its picture's menu (view, change, remove) in groupedit.go;
+                   a profile picture shown big, full size (`Backend.ProfilePhoto`, not
+                   kept on disk), in photoview.go; the Media panel (the rail's Media button:
+                   media, docs and links from every chat, or one chat's) in gallery.go; the list column's
+                   draggable edge and hiding it (the open page's rail button, Ctrl+Shift+L) in split.go; a sender's run of stickers, side by side as many to a
+                   line as fit, in stickerrow.go; a text of one to three emojis
+                   alone, drawn big without a bubble like a sticker, in jumbo.go; the Emoji style
+                   (Settings > Chats: 2D, built in; 2D animated, with an Animated emojis page of
+                   switches for where they play: message text, big emojis, quotes, reactions, the
+                   chat list, the picker and everywhere else, the parts that draw them marking
+                   themselves with `u.emojiIn`; 3D: the others downloaded one emoji at a time as
+                   they show) in emojistyle.go; the New chat panel and the
+                   New group flow (also "Create a similar group") in newchat.go; the settings
+                   pages (profile, account, privacy, chats, shortcuts, help) in
+                   settingsdetail.go (the home's search finds settings on every page, in
+                   settings.go); Video & voice (device choices kept as prefs) and Storage
+                   (automatic downloads, `model.AutoDownload`) in settingsmedia.go; the window's zoom (Settings > General > Font size,
+                   Ctrl with +, - and 0, and the bubble that shows it) in scale.go; privacy
+                   mode (names and messages drawn as bars, pictures blurred, shown under
+                   the pointer; the title bar's eye and Ctrl+Shift+P, once the Privacy mode
+                   toggle on the Extra features page is on) in privacy.go: `u.hiding` sets `u.secret`, which
+                   `u.label`, `layoutSpans`, `drawAvatar` and `messageImage` read;
+                   the accounts that run in the background (connected, or checked every
+                   few minutes) in background.go, and the account switcher, its background
+                   mode menu and the accounts' settings pages (Settings > Account) in
+                   accounts.go
+internal/ui/icon/  Material Symbols from SVG path data (symbols.go is generated) and the
+                   wallpaper doodles
+internal/ui/styledtext/  gio-x styledtext, vendored with a fix for bitmap emoji
+internal/command/  slash commands, like Discord's: the list (commands.go), parsing their options,
+                   and running them through a Host the UI implements. No Gio here
+internal/auto/     scheduled messages (/schedule) and AFK replies (/afk): wraps the Backend
+                   (`withAuto`; the host's, so they go on without a window), sees its events
+                   and your sends, and keeps its state in the backend's prefs. In ghost mode
+                   (/ghost) it refuses your own sends, but not its own
+internal/sticker/  turns a picture into a 512x512 sticker, with meme text in the embedded Anton
+                   font (OFL), and its own lossless WebP (VP8L) encoder: x/image only decodes
+                   WebP, and libwebp needs cgo or, translated to Go, adds megabytes. Videos,
+                   GIFs and animated WebP become animated stickers through the system's
+                   ffmpeg (anim.go), when there is one
+internal/wa/       hypermeow backend: pairing, events, SQLite message store, name resolution;
+                   what a stored message shows, read from its payload (raw_payload, which
+                   /catch shows, and edit_payload), in payload.go;
+                   albums (an albumMessage, then each picture pointing back to it) in album.go;
+                   polls, locations, contact cards and events (cards in bubbles) and the
+                   votes and event answers they get (wz_votes) in polls.go;
+                   system messages (model.KindSystem), stored with a waWeb stub as their
+                   payload and worded when read, in system.go;
+                   each person's receipts of your messages (wz_receipts, for Message info;
+                   a group message's ticks wait for every member) in receipts.go;
+                   contacts' abouts (cached in wz_meta for the forward picker, with when
+                   each was set from a raw usync) and a chat's Advanced chat privacy
+                   (LIMIT_SHARING, kept with its info; it can't be set) in about.go;
+                   a chat's disappearing-messages timer (wz_chats.ephemeral, for the
+                   avatars' timer badge) in timer.go;
+                   the links only the server resolves (channels, business messages,
+                   contact QR codes; `ResolveLink`) in links.go;
+                   status privacy and your audiences (the status_privacy app state action),
+                   hidden statuses (userStatusMute) and the check that a status reaches only
+                   the chosen audience in statusprivacy.go;
+                   snippets (wz_snippets, their media copied to snippet-media/) in snippets.go
+                   and snippetmedia.go
+internal/mock/     demo Backend with fake chats (used by -demo and cmd/screenshot); in
+                   background.go, what tests of background accounts need (messages kept
+                   for the next Start, counted starts and closes)
+internal/photo/    scales and compresses photos to send (Standard, HD, Raw) and Shrink
+internal/webpanim/ animated WebP (animated stickers), decoded one frame at a time
+internal/emojiset/ downloads the emojis into <data>/emoji: Noto Color Emoji, the 2D font, once;
+                   Noto's 3D emojis (googlefonts/noto-emoji, 3dpng branch) and animated ones
+                   (Google Fonts) one at a time, the first time each shows. A 404 is remembered
+                   (an empty .none file). Also keeps the animations' decoded sheets (sheets.go)
+internal/mapfile/  maps a file into memory copy-on-write (the downloaded emoji font)
+internal/offheap/  pictures whose pixels live outside the Go heap (animated emoji sheets)
+internal/video/    plays videos with the OS's own player (Media Foundation on Windows);
+                   other systems return ErrUnsupported and open the system's player app.
+                   OpenAudio plays voice messages and audio files the same way
+internal/record/   records voice messages: the microphone (winmm's waveIn through syscall on
+                   Windows; parec or arecord elsewhere) streams 16 kHz PCM into a temporary
+                   WAV, keeping only its loudness in memory; the system's ffmpeg (on PATH)
+                   encodes it to OGG Opus to send. -demo records a made-up voice (Demo)
+internal/klipy/    searches KLIPY's GIFs (trending, search, the share count) and downloads
+                   their media, for the picker's GIF tab
+internal/linkpreview/ reads a page's Open Graph tags (or title) for the preview of a link you
+                   send; Settings > Privacy > Disable link previews turns it off
+internal/osclip/   files and pictures on the system clipboard (Gio's carries only text)
+internal/camera/   the attach menu's Camera: opens the system's camera app and waits for the
+                   photo it saves (no capture of our own; that would need each OS's capture API)
+internal/filepick/ the system's "Open" dialog (comdlg32 on Windows; zenity, kdialog or
+                   osascript elsewhere), run on its own goroutine
+internal/memtrim/  gives memory back to the OS after 10 s without a frame (see ui.Run)
+internal/notify/   system notifications: WinRT toasts on Windows (replaced per chat, removed
+                   when read, Reply and Mark as read through a COM activator), notify-send
+                   or osascript elsewhere
+internal/desktop/  tray icon, one instance per data directory, start at login, window icon
+                   (Windows; stubs elsewhere), whatsapp: links (links_windows.go: a ProgID
+                   and Capabilities, so Settings > Default apps offers the app; a second
+                   launch hands its link to the running one with WM_COPYDATA), and the system's light or dark theme (Settings >
+                   Chats > Theme > System default, read again when the window gets focus),
+                   and the names of microphones and speakers (Windows)
+internal/update/   updates from GitHub releases (Settings > Help; automatic updates, on by
+                   default, check every few hours and install without restarting, ui/update.go):
+                   downloads a patch from the running version when the update-patches
+                   prerelease has one (bspatch.go, on the standard library's bzip2; kept off
+                   the release's page) or else the whole executable, checks
+                   the signed SHA256SUMS, swaps the executable (the running one moves to
+                   .old on Windows) and the UI restarts it with -wait-pid (ui/update.go).
+                   Only tag builds (-X main.version=v1.2.3) update
+internal/accounts/ the WhatsApp accounts linked on this computer (accounts.json), each with
+                   a data directory of its own: the first is the data directory itself,
+                   the ones added later are accounts/<n>; and how each runs while another
+                   is open (Mode: off, a check every 5 to 60 minutes, or always connected)
+                   and when it last checked
+patches/           go-text and Gio patches and apply.sh, which builds third_party/ (gitignored)
 ```
 
-- `Provider` interface: `Chat(ctx, req ChatRequest) (<-chan StreamChunk, error)` + `TestConnection(ctx) error`.
-- Default implementation: OpenAI-compatible Chat Completions (`POST {BaseURL}/chat/completions`, `model`, `messages`, `temperature`, `stream:true`, SSE `data:` parsing). Must work with:
-  - Presets: OpenAI, Groq, OpenRouter, Google Gemini (OpenAI-compatible endpoint), Ollama (`http://localhost:11434/v1`), LM Studio (`http://localhost:1234/v1`), Custom.
-  - Custom: user sets `BaseURL` (e.g. `https://api.openai.com/v1`, `https://openrouter.ai/api/v1`, `http://localhost:11434/v1`), `APIKey`, `Model` (free text, e.g. `gpt-4o-mini`, `llama3.1`, `qwen2.5`).
-- No SDK dependency. Only stdlib HTTP. Timeouts: connect 10s, request 120s (streaming), cancel via context. Map errors to user text: invalid key (401), model not found (404), rate limit (429, show retry-after), endpoint unreachable, invalid JSON.
-- Streaming in Gio: stream tokens into composer / AI panel, with Cancel button, retry, and a visible “AI is generating…” state. Never block the UI goroutine — do network on a worker goroutine, post results to UI like `desktop` / `host` does (never `SendMessage` to window from UI goroutine, see AGENTS.md).
+## Window lifecycle and notifications
 
-**5.2 Config & secrets**
+`ui.Run` (`internal/ui/host.go`) owns the process. Its goroutine is the UI goroutine
+for good, with or without a window: a helper goroutine waits for each window event and
+hands it over, so requests (tray, notification clicks, a second launch) are served even
+while the window is minimized and Gio draws no frames.
 
-- Settings > AI (new section, follow KLIPY pattern in `internal/ui/gifs.go`): Enable, Provider preset dropdown, Base URL, API Key (password field, masked, Show/Hide), Model, Temperature, System Prompt (editable, per-account default), Test Connection button.
-- Storage: per-account AI config, plus global default. Store in the account data dir, file mode `0600`, JSON. Key is stored as-is (user-owned device, like KLIPY today) — do NOT commit it, do NOT log it, do NOT include it in bug reports / `-debug` output. Add a `Redact()` helper for logs.
-- Validation on save: Test Connection must succeed before enabling auto-reply. Show model list hint, but do not require a model-list endpoint (many local servers don't have it).
+- With the tray icon up and the user logged in, closing the window destroys it, which
+  frees its GPU textures, and drops the window's `UI` and the package caches
+  (`dropCaches`; add new package-level drawing caches there). The backend keeps running;
+  the next window gets a fresh `UI` built from the stored chats plus the latest
+  `ConnEvent`. `-background` starts without a window (start at login).
+- Every backend event goes through `host.poll`: the notifier (`notifications.go`) sees
+  them all, and the window's `UI` gets them through `hostBackend.Poll`. Only
+  `MessageEvent`s with `New` set notify; backends set it for messages that just arrived
+  (not history, edits, reactions or repeats).
+- Several accounts can be linked; one is open (in the window) at a time. Switching
+  (`internal/ui/accounts.go`: the ⋮ menu's "Switch account" and the login screen)
+  opens the other one through `Options.Open`, or takes its backend from the
+  background, and gives the window a new `UI`. The theme and other `appPrefs` carry
+  over. Logging out with another account linked opens that one and takes the
+  logged-out account off the list; so does switching away from an account that isn't
+  linked.
+- The others run as their `accounts.Mode` says (`internal/ui/background.go`, set in
+  the switcher and on Settings > Account): not at all (the default, to keep memory
+  low), always connected, or checked every 5 to 60 minutes: opened, connected until
+  the backend's `CaughtUpEvent` (WhatsApp sent what it kept) and a few seconds more,
+  then closed. Each has a backend of its own, wrapped with `withAuto` so scheduled
+  messages and AFK go on (a check also runs when the next scheduled message is due,
+  since `auto` drops late ones), and a notifier, which outlives a checked account's
+  backend. Their backends open and close on goroutines and come back through
+  `bgOpen`; everything else, polling them included, stays on the UI goroutine.
+  Switching away from an always-connected account moves its backend and notifier to
+  the background (`toBackground`) instead of closing it. One logged out, on the phone
+  or from its settings page, leaves the list (`bgLoggedOut`). An idle connected
+  background account costs about 2 MB (a big one's database about 10 more) and
+  almost no CPU.
+- Notification rules follow WhatsApp: one per chat, nothing while the window has focus,
+  muted and archived chats only for mentions and replies to you, removed once the chat
+  is read (here or on another device). Preferences are `Backend.Pref` keys, on unless
+  "off" (`prefNotify*`, `prefBackground`). Each account's notifier follows its own
+  account's preferences; its notifications' IDs are `<account Dir>|<chat>`, and a
+  background account's name the account ("Alice · Work") and show while the window
+  has focus. Clicking one, or its Reply or Mark as read, switches to its account
+  first (`host.route`); Reply and Mark as read wait until it's online (`host.later`).
+  The tray tooltip counts every account's unread chats.
 
-**5.3 Features (implement in this order)**
+## Conventions
 
-1. **Ask AI (`/ai`)**: slash command + AI panel. `/ai <question>` answers using optional context: current chat last N messages (default 20, configurable, only when user explicitly runs it). Show answer in-chat as a local AI message (clearly labelled, not sent to WhatsApp unless user taps Send).
-2. **Chat tools (context menu on a message / chat)**: Summarize chat, Summarize unread, Draft reply (3 variants: short / polite / casual), Rewrite selected text, Translate to Indonesian / English. All are suggest-only by default.
-3. **Smart replies**: in composer, “✨ Suggest replies” generates 3 short replies from last messages. Tap to insert into composer, user still sends.
-4. **AI auto-reply agent (opt-in, off by default)**: hook into `internal/auto.Backend` — reuse its event loop, prefs, and timer, do not create a second auto-reply system. Per-chat toggle + per-account toggle + global toggle (all three must be on).
-   - Modes: `Off` / `Suggest only` (default) / `Auto-reply` (allowlist chats only).
-   - Rules: never reply to own messages, status, channels, or groups unless @mentioned (configurable); cooldown per chat (default 60s), max replies per hour per chat (default 10), quiet hours, keyword to hand over to human (e.g. `human`, `admin` stops auto-reply for that chat), stop on user sending a message in that chat.
-   - System prompt per account + per chat override, include: account name, chat name, recent context (max N messages, no media bytes, only captions), language (follow chat language, default Indonesian).
-   - Every auto-reply is logged locally with timestamp, prompt hash (not full prompt), and model. Show “🤖 Auto-reply on” indicator in that chat.
-5. **AI in search**: optional “Ask about this chat” from chat search, same context rules as (1).
+- Keep the UI immediate-mode: state lives in plain structs, and every frame is rebuilt
+  from that state. Don't cache widget trees.
+- Keep UI code free of protocol types. The UI only sees `internal/model`; `internal/wa`
+  converts hypermeow events into model events. The UI drains them with `Backend.Poll` on
+  the window goroutine, so UI state never needs locks.
+- hypermeow stores keys and sessions, not messages. `internal/wa/store.go` keeps chats and
+  messages in `wz_*` tables of the same SQLite file (`%AppData%\WazzapClients\wazzap.db`).
+- A message is stored as its payload, the waE2E protobuf it came or went as
+  (`raw_payload`), plus its latest edit's (`edit_payload`). Everything it shows (media,
+  thumbnail, file, link preview, quote, mentions, cards, buttons...) is read from them by
+  `rawMsg.fill` (`internal/wa/payload.go`), the way `parse` reads a message that arrives;
+  don't add a column for something the payload holds. The columns are only the envelope
+  (sender, time), what happens to a message later (receipt, reaction, star, pin, edit,
+  revoke, opened) and `kind`, `media` and `text`, copies kept for queries. Your own
+  messages get a payload before they go (a file's, before its upload) and
+  `setRawPayload` replaces it as they're sent. `dropOldMessages` drops the messages of a
+  database from older versions, which kept them in columns of their own, once.
+- Never call into hypermeow's device store inside a `wz_*` write transaction. It writes
+  to the same SQLite file and would block until the busy timeout (see `onHistory`).
+- Don't drop messages the app can't show: `parse` stores them as `KindUnsupported` ("This
+  message couldn't load"). Add harmless protocol fields to `noContentFields`
+  (`internal/wa/interactive.go`) instead. Business message buttons live there too.
+- `u.msgs` is a window of the open chat, not all of it: pages of 100 load as the list
+  nears either end, and at most 400 stay loaded (`internal/ui/paging.go`). Don't assume a
+  message is in `u.msgs`; `jumpTo` loads the messages around one that isn't.
+- One-to-one chats are keyed by LID when a mapping is known (`canonical`), because
+  hypermeow treats the LID as the stable identity.
+- Channels (newsletters) are stored like chats in `wz_chats`/`wz_messages`, plus their
+  metadata in `wz_channels`, and are left out of the chat list. Status updates live in
+  `wz_status`. Community structure is in the `parent`, `community` and `announce_sub`
+  columns of `wz_chats`, filled from `GetJoinedGroups` on connect.
+- Measure against real WhatsApp Desktop screenshots instead of guessing sizes. Use
+  `cmd/screenshot -compare`, which renders the same view at the screenshot's scale next to
+  it (see Commands). Full-window screenshots at 2000px wide are 1.22 px/dp; native
+  2560x1600 crops are 1.5616 px/dp.
+- Sizes are in `unit.Dp` / `unit.Sp`, never raw pixels. Convert with `gtx.Dp` / `gtx.Sp`.
+- Colors live in `internal/ui/theme.go` (light and dark palettes). Don't hard-code colors
+  in widgets.
+- Watch memory use. Low RAM is the reason this project exists. Measure with
+  `cmd/memprobe` before and after a change; the private working set is what Task Manager
+  shows. Keep caches bounded by bytes, not just entries (see `imageCache`).
+- UI tests run on a clock of their own (`internal/ui/main_test.go`): 15:00 UTC on a fixed
+  day, moving on in real time, read by the mock (`mock.Clock`) and the UI. The demo chats
+  are dated "today at 09:02" by it, so on the real clock tests passed in one time zone or
+  hour and failed on CI, which runs in UTC. Use `testNow()` in tests, never `time.Now()`,
+  and backend code should read its clock (`b.now()`), not `time.Now()`.
 
-**5.4 Privacy & safety**
+## Animations
 
-- AI is opt-in per chat. No chat history is sent to any AI endpoint unless the user triggers (1)–(3) or explicitly enables (4) for that chat. Show a one-time consent dialog the first time AI is enabled per account.
-- Never send: phone numbers in bulk, media files, view-once content, or messages from other accounts. Only text + captions, truncated to `MaxContextMessages`.
-- Ghost mode: if ghost is on, AI auto-reply must not send (same rule as `internal/auto`).
+The helpers are in `internal/ui/anim.go`. Each frame computes an animation's progress
+from `gtx.Now`; a moving one asks for the next frame, and nothing asks at rest
+(`TestIdleAtRest` checks this).
 
-### 6. Performance & QA
+- Settings > Performance > Animations (`perf.animations`) makes `tween` and `follower`
+  jump to their end. New animations built on them obey it for free; anything that
+  steps itself from `gtx.Now` (the typing dots, the jump-to-message glide) checks it.
+- `tween` is an on/off progress (a popup opening, a panel sliding) that turns around
+  midway without jumping. `follower` glides a number to a new target (tab underlines),
+  and `switcher` moves a highlight between items (the open chat, the active rail
+  button). Hovers and other per-widget fades go through `u.hover` and `u.anims`.
+- A closing overlay keeps its state with a `closing` flag (or a "ghost" copy of what
+  it showed) and draws with `fadeOut(gtx)` while it fades, so clicks go through.
+  Check `isOpen()` or `shown()` rather than the raw fields.
+- Don't animate icon or `cachedGlyph` colors: both are cached per color. Cross-fade
+  two colors with `withOpacity`.
+- Keep opacity layers small (menus, pickers, rows). For big areas, fade a backdrop's
+  color and the parts on it one by one, or cover content on a plain background with a
+  `veil` of that background.
+- Lay out vertical lists with `u.scrollList`, not `List.Layout`: besides the scrollbar,
+  it takes the mouse wheel before the list and a critically damped spring eases the
+  notches in, its speed never jumping, even when a notch comes mid-scroll (`wheelList`,
+  `internal/ui/scroll.go`). On Windows, touchpad deltas (not multiples of 120) move
+  the list at once.
+- Frames go out one per display refresh, but start unevenly (4.5 to 7.5 ms apart at
+  165 Hz), and steps worked out from those times judder. The window's `gtx.Now` comes
+  from `frameClock` (`anim.go`), which moves by whole refresh intervals while frames
+  follow each other. Tests and `cmd/memprobe` draw with the real (or test) time.
+- Film an animation with `cmd/screenshot -film` (see Commands) to check its frames.
+- Run `gofmt`, `go vet ./...` and `go build ./...` before you finish.
+- The app is MPL-2.0 (`LICENSE`); the executables are GPL-3.0 as a whole, since
+  hypermeow links libsignal-protocol-go. After changing a dependency, or bundling a
+  font, icon set or data from elsewhere (add its license file beside it and to `bundled`
+  in `cmd/notices`), run `go run ./cmd/notices` and commit `THIRD_PARTY_NOTICES.md`.
+  Don't add WhatsApp's or KLIPY's logos: the names only say what the app works with.
 
-- Before/after measurements: startup time, idle RAM after 10s idle (use `cmd/memprobe` if present), RAM with 2 accounts, RAM during AI streaming. Put numbers in the PR description.
-- `go vet ./...`, `go test ./...`, `go build ./...` must pass on Windows + Linux (at least `GOOS=windows go build`, `GOOS=linux go build` if cross-compile works).
-- Manual QA: `go run ./cmd/wazzap -demo` for UI, real link with a secondary number (never the user's main number) for multi-account + AI. Document the QA steps in `docs/qa-ai.md` and `docs/qa-multiaccount.md`.
-- Keep the demo mode working: AI features must be disabled / mocked in `-demo` (no real key, no network).
+## Commands
 
-### 7. Deliverables
+```sh
+sh patches/apply.sh            # once after cloning: builds the patched go-text
+go run ./cmd/wazzap            # run the app (links to WhatsApp via QR code)
+go run ./cmd/wazzap -demo      # run with fake chats, no network
+go run ./cmd/wazzap -background  # start in the tray, without a window
+go run ./cmd/screenshot        # render preview PNGs into ./docs/
+# Every screenshot in README.md (the list is readmeShots in cmd/screenshot/readme.go):
+go run ./cmd/screenshot -readme -w 1280 -h 800 -scale 1.25 -out docs/screenshots
+go run ./cmd/memprobe -demo    # memory benchmark (Windows); -data <copy of the data dir>
+# Scroll the chat list for 1200 frames and print frame times, CPU, GCs, the frame
+# rate and late frames; -ballast adds live heap like a long session's, -cpuprofile
+# writes a profile. -chat scrolls the first chat's messages instead, and -size sets
+# the window in dp (1706x1040 is about a maximized 2560x1600 window at 150%):
+go run ./cmd/memprobe -data <copy> -scroll 1200 -ballast 60 -cpuprofile cpu.pprof
+go run ./cmd/memprobe -demo -scroll 2000 -size 1706x1040 -chat
+# Animated emojis from the downloaded ones: -emoji scrolls the emoji picker (or, with
+# -chat, the chat -open names); -pref sets app preferences as Settings would:
+go run ./cmd/memprobe -demo -emoji "$APPDATA/WazzapClients/emoji" -scroll 1500 -size 1706x1040     -pref emoji_anims=64 -pref gc_percent=200 -pref zoom=200
+go vet ./... && go build ./...
 
-1. `docs/audit.md` (Phase 0)
-2. Phase 1 UI/UX, Phase 2 multi-account, Phase 3 AI — each as separate commits / PRs, each with tests.
-3. `docs/ai-setup.md`: how to set up OpenAI / Groq / OpenRouter / Ollama / LM Studio / Custom endpoint, with example BaseURL + Model for each, and troubleshooting (401 / 404 / 429 / CORS is N/A — desktop app, no browser).
-4. `docs/qa-ui.md`, `docs/qa-multiaccount.md`, `docs/qa-ai.md`.
-5. Updated `README.md`: new features, screenshots in demo mode, AI setup link, multi-account note, and the existing disclaimer that this is unofficial and may violate WhatsApp ToS / risk suspension.
+# Side by side with a WhatsApp screenshot (writes compare.png and ours.png).
+# -view: chats, archived, status, channels, communities, settings, general, profile,
+# account, accounts (Settings > Account with demo accounts), accountmode and
+# accountcheck (the pages of an account always connected and of one checked),
+# privacy, lastseen, blocked, chatsettings, notifications, shortcuts, extras, help,
+# videovoice, microphone, storage, info, statusviewer, contact (a group member's contact info:
+# -contact <id>, default the demo business nova@lid)
+go run ./cmd/screenshot -compare shot.webp -crop 0,0,2000,1250 -scale 1.22 -view status
+# A crop of the right edge of a 2560x1600 window, with the info panel scrolled:
+go run ./cmd/screenshot -compare info.png -crop 0,0,795,1597 -win 2560,1600 -right \
+    -scale 1.5616 -view info -infoscroll 7 -infooffset 40
+# Render one overlay with demo data (menu, accounts, loginaccounts, acctmode (an account's background modes, over the switcher: -at 1170,455), slash, slashkick, slashcalc, slashschedule, slashrun, ghost (/ghost; open a
+# group: -ochat work), chatmenu, mute, lists, msgmenu, stickermenu, emoji, sticker, gifs (the GIF tab with demo results), viewer, forward, forwardpick (two chats picked), reply, replyphoto, linkpreview, linkloading (its card while it loads), invite,
+# delete, select, edit, edits, recording, recordingpaused (a voice message being recorded, paused), reactions (who reacted: -ochat work), mention, mentioned, shortcode (the :emoji: picker), votes (a poll's or event's votes: -ochat design or family), search (WAZZAP_DEMO_SEARCH=<query>), membersearch, listsearch (the chat list's search, the same variable), listchip, newlist, selectchats, applock, applockon, lockscreen, linkbar (the bar asking to open WhatsApp links here), channellink (a channel's link, to follow), sharelink (a share link's chat picker), zoombubble, zoommenu, privacy (also
+# privacystatus, privacycommunities); the Media panel:
+# gallery, gallerydocs, gallerylinks, galleryselect, chatgallery, starredall (the ⋮ menu's Starred messages); the open chat's convmenu, timer, theme,
+# encryption, addmember, invitelink, left (a group you left: -ochat family), and its info pages perms, starred, changes;
+# a group's info being edited: groupname, groupdesc, groupphoto (its picture's menu); picview (the chat's picture, big); the list column listwide, listnarrow, listhidden; the send view: tray, sendedit, sendcrop, sendfilter, senddoc, sendslash (the command picker over the caption), with
+# WAZZAP_DEMO_PHOTO=<a photo> to edit) into <out>/overlay-<name>.png:
+go run ./cmd/screenshot -overlay msgmenu -at 700,300 -out /tmp/shots
+# Film an animation into <out>/film-<name>.png: frames -step apart, opening on top and
+# closing (Esc) below. Also info, message, reorder, typing, typists (a second person
+# typing in a group, then the first stopping: -ochat work), ghost (on, then off), privacy (on, then off),
+# privacyhover (privacy mode on, the pointer at -at), vote (in a poll: -ochat design,
+# moving the vote below), scroll (the wheel turned up at -at, then a message comes),
+# and hover (the pointer at -at):
+go run ./cmd/screenshot -film msgmenu -at 700,300 -scale 1 -w 1100 -h 700 -step 40ms -out /tmp/shots
+# Draw emojis in another Emoji style (2d_anim_alone, 2d_anim or 3d) from the pictures the
+# app downloaded (none are downloaded here; the missing ones draw 2D):
+go run ./cmd/screenshot -emoji 3d -emojidir "$APPDATA/WazzapClients/emoji"
+# Render your real stored chats instead of demo data (no network):
+go run ./cmd/screenshot -compare shot.webp -crop 0,0,2000,1250 -scale 1.22 \
+    -data "$APPDATA/WazzapClients" -view channels
+```
 
-### 8. Out of scope — do not do
+## Committing
 
-- Do not add WebView / Electron / Chromium, do not add a web frontend.
-- Do not add calls / video calls unless already in upstream and trivial.
-- Do not add a server, account system, or cloud sync. Everything stays local.
-- Do not change the WhatsApp protocol code in `hypermeow` — if a protocol bug blocks you, report it, do not fork hypermeow inside this repo.
-- Do not enable AI auto-reply by default. Do not send any message automatically without the explicit per-chat opt-in in 5.3(4).
-
-Work now. Start with Phase 0, show the audit, wait for approval before coding Phase 1.
-
----
-
-## Checklist buat lo sebelum paste
-
-- [ ] Fork `Chomosuke9/WazzapClients` di GitHub
-- [ ] `git clone <fork-lo>`, `cd <repo>`, `sh patches/apply.sh`
-- [ ] `go run ./cmd/wazzap -demo` jalan dulu (pastikan base-nya sehat)
-- [ ] Paste Master Prompt di atas ke AI agent lo
-- [ ] Minta agent berhenti setelah Phase 0 audit, review dulu sebelum lanjut
+- Stage files by name (`git add path/to/file.go`), never `git add -A` or `git add .`.
+- Never commit `third_party/` (the patched go-text and Gio that `patches/apply.sh`
+  generates, ~56k lines each) or `.idea/` (IDE settings). Both are gitignored; if either shows up as
+  untracked, the `.gitignore` is missing or out of date, so sync with `origin/main`.
+- Check `git diff --cached --stat` before committing. A change of tens of thousands of
+  lines means something generated got staged.
+- Before committing on `main`, check that it isn't behind `origin/main`
+  (`git fetch && git status`), so the commit lands on the current code.

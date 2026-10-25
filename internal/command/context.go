@@ -85,6 +85,8 @@ type Context struct {
 	Now time.Time
 	// Auto sends scheduled messages and AFK replies; nil without it.
 	Auto *auto.Backend
+	// AI answers /ai and /aisummary; nil when AI isn't set up.
+	AI AIAnswerer
 	Host
 }
 

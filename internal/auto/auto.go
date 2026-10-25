@@ -72,6 +72,7 @@ type Backend struct {
 	seq    int
 	ver    int // bumped as the jobs change
 	ghost  bool
+	ai     *aiState // the AI auto-reply agent, when attached (ai_hook.go)
 }
 
 // Wrap returns b with scheduled messages and AFK, reading the time from
@@ -125,9 +126,11 @@ func (a *Backend) Poll() []model.Event {
 			a.groups[e.Chat.ID] = e.Chat.IsGroup
 		case model.MessageEvent:
 			a.seen(e)
+			a.aiSeen(e)
 		}
 	}
 	a.sendDue()
+	a.aiDrain()
 	if len(a.out) > 0 {
 		evs = append(evs, a.out...)
 		a.out = nil

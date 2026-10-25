@@ -17,14 +17,15 @@ import (
 // Demo data for the non-chat parts of the UI: statuses, channels,
 // communities and the info panel.
 type extras struct {
-	statuses    []*model.StatusThread
-	privacy     model.StatusPrivacy
-	channels    []*model.Channel
-	suggested   []*model.Channel
-	communities []*model.Community
-	infos       map[string]*model.ChatInfo
-	summaries   map[string]model.MediaSummaryEvent // canned info panel media
-	posted      int                                // status updates posted, for their IDs
+	statuses     []*model.StatusThread
+	privacy      model.StatusPrivacy
+	channels     []*model.Channel
+	suggested    []*model.Channel
+	communities  []*model.Community
+	infos        map[string]*model.ChatInfo
+	summaries    map[string]model.MediaSummaryEvent // canned info panel media
+	posted       int                                // status updates posted, for their IDs
+	postedStatus model.StatusPost                   // the last status posted, for tests
 }
 
 func (b *Backend) Statuses() []*model.StatusThread { return b.statuses }
@@ -40,9 +41,13 @@ func (b *Backend) ViewStatus(threadID, statusID string) {
 	b.emit(model.StatusEvent{})
 }
 
+// LastStatusPost is the last status posted, for tests.
+func (b *Backend) LastStatusPost() model.StatusPost { return b.postedStatus }
+
 // PostStatus adds the update to your own thread. A photo is its own
-// preview.
+// preview. The last post is kept so tests can see its quality.
 func (b *Backend) PostStatus(p model.StatusPost) {
+	b.postedStatus = p
 	b.posted++
 	up := &model.StatusUpdate{ID: "posted-" + strconv.Itoa(b.posted), FromMe: true, Sender: "You", SenderID: "me", Text: p.Text, Background: p.Background, Time: b.now()}
 	if f := p.File; f != nil {

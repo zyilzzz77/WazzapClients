@@ -307,6 +307,21 @@ a whole, are distributed under the GPL version 3. The third-party software in th
 each one's license, is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which
 the installer copies next to the app and every release carries.
 
+## Fork changes (`feat/ui-ai-multiaccount`)
+
+This fork adds, on top of upstream:
+
+- **Themes** — Light, Dark, Dark OLED (true black), Navy, Forest, Sepia, WhatsApp Green, in Settings > Appearance (global default + per-account override, instant switch, no restart). WhatsApp Web colours for the dark theme.
+- **Custom chat wallpaper** — per-chat + global default: built-in doodle, solid colour, or your own image (downscaled, capped, off-heap), with a dimming slider so bubbles stay readable.
+- **View-once save (opt-in, off by default)** — Settings > Privacy > "Allow saving view-once media". When on, the viewer shows a Save button with a warning that the sender expected the media to disappear. Never auto-saves.
+- **HD status** — Standard vs HD toggle when posting photo/video status, reusing the existing photo HD path.
+- **True multi-account** — rename/reorder accounts, per-account unread badges, per-account drafts and scroll position preserved across switches, max 2 `Always`-connected accounts by default, per-account notification and AI settings. Each account keeps its own `wazzap.db`, session, prefs, AI config, and media cache.
+- **AI agent (bring your own key)** — Settings > AI: any OpenAI-compatible provider (OpenAI, Groq, OpenRouter, Gemini, Ollama, LM Studio, Custom) with your own Base URL, API key, and model. Key is stored per-account in `ai.json` (0600) and never logged. Features: `/ai` and `/aisummary`, ✨ smart replies in the composer, and opt-in AI auto-reply (global + per-account + per-chat must all be on, with cooldown, hourly cap, quiet hours, human handoff, and ghost-mode blocking). See [docs/ai-setup.md](docs/ai-setup.md) and [docs/qa-ai.md](docs/qa-ai.md).
+- **Keyboard shortcuts** — Ctrl+K search, Ctrl+N new chat, Ctrl+1–9 switch account, Ctrl+Shift+M mute, Esc close/clear.
+- Full audit and QA notes: [docs/audit.md](docs/audit.md), [docs/qa-ui.md](docs/qa-ui.md), [docs/qa-multiaccount.md](docs/qa-multiaccount.md).
+
+Test new features with a **secondary number only, never your main number** — this is an unofficial client and using it may get an account banned (see disclaimer below).
+
 ## Trademarks and disclaimer
 
 WazzapClients is an unofficial client. It isn't affiliated with, endorsed by or sponsored

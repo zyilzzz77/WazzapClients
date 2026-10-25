@@ -1279,6 +1279,11 @@ const PrefKeepDeleted = "keep_deleted"
 // and screenshots of it aren't blocked.
 const PrefViewOnceReplay = "view_once_replay"
 
+// PrefViewOnceSave is the Pref key of the "Allow saving view-once media"
+// privacy setting, on when "on": the view-once viewer offers a Save
+// button. Off by default; saving is never automatic.
+const PrefViewOnceSave = "view_once_save"
+
 // Pref keys of Settings > Storage's automatic downloads: whether media of
 // a kind downloads by itself.
 const (
@@ -1396,6 +1401,13 @@ type Backend interface {
 	// SaveMedia saves a message's picture or file to the Downloads folder
 	// in the background; a NoticeEvent reports the result.
 	SaveMedia(m *Message)
+	// SaveViewOnce saves a view once message's media to the account's
+	// media folder, in the background; a NoticeEvent reports the result.
+	// It does nothing unless PrefViewOnceSave is on.
+	SaveViewOnce(m *Message)
+	// DataDir is the account's data directory: its database, media and
+	// wallpaper files live there.
+	DataDir() string
 	// OpenMedia opens a video, voice message, audio file or document with
 	// the system's app for it, downloading it first in the background; a
 	// NoticeEvent reports failures.

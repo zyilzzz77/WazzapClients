@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"log"
 	"strconv"
 	"time"
@@ -114,7 +115,14 @@ func (h *host) startBackground() {
 		return
 	}
 	at := timeNow().Add(bgStartDelay)
+	always := 0 // started Always accounts: the budget caps them
 	for _, a := range l.Accounts {
+		if h.bgMode(a.Dir) == accounts.Always {
+			always++
+			if always > l.AlwaysLimit() {
+				continue // over budget: it checks when its mode changes
+			}
+		}
 		if h.bgMode(a.Dir) != accounts.Off && h.bg[a.Dir] == nil {
 			h.bg[a.Dir] = &bgAccount{dir: a.Dir, next: at}
 		}
@@ -131,6 +139,11 @@ func (h *host) setBackgroundMode(dir string, m accounts.Mode) {
 	}
 	a := l.Find(dir)
 	if a == nil || a.Background == m {
+		return
+	}
+	if m == accounts.Always && !h.alwaysBudgetOK(dir) {
+		h.toast(fmt.Sprintf("Only %d accounts can stay always connected. "+
+			"Set another account to check every few minutes instead.", h.alwaysLimit()))
 		return
 	}
 	a.Background = m
@@ -535,6 +548,7 @@ func (h *host) logoutAccount(dir string) {
 func (h *host) newNotifier(b model.Backend, dir string) *notifier {
 	n := newNotifier(b, h)
 	n.enabled = h.notifyOK
+	n.notifyOff = h.acctNotifyOff(dir)
 	if h.o.Accounts != nil {
 		n.prefix = dir + "|"
 	}
@@ -544,9 +558,15 @@ func (h *host) newNotifier(b model.Backend, dir string) *notifier {
 }
 
 // openNotes makes n the open account's: nothing shows while the window
-// has focus, and titles don't name the account.
-func (h *host) openNotes(n *notifier) {
-	n.account, n.app = "", nil
+// has focus, and titles name the account only when another is linked —
+// with one account there is nothing to tell apart.
+func (h *host) openNotes(n *notifier, dir string) {
+	n.account = ""
+	n.notifyOff = h.acctNotifyOff(dir)
+	if h.o.Accounts != nil && len(h.o.Accounts.Others()) > 0 {
+		n.account = h.accountLabel(dir)
+	}
+	n.app = nil
 	n.focused = func() bool { return h.focused }
 }
 
@@ -556,6 +576,7 @@ func (h *host) openNotes(n *notifier) {
 // the account's chats.
 func (h *host) backgroundNotes(n *notifier, dir string) {
 	n.account = h.accountLabel(dir)
+	n.notifyOff = h.acctNotifyOff(dir)
 	n.app = func() model.Backend { return h.b }
 	n.focused = func() bool { return false }
 }
@@ -608,11 +629,18 @@ func (h *host) flushNotes() {
 	h.armNotes()
 }
 
-// updateTooltip counts every account's unread chats on the tray icon.
+// updateTooltip counts every account's unread chats on the tray icon:
+// the persisted counts, synced from the notifiers first, so an account
+// whose backend is closed between checks still counts.
 func (h *host) updateTooltip() {
+	h.syncUnreadCounts()
 	total := 0
-	for _, n := range h.notifiers() {
-		total += max(n.unread, 0)
+	if h.unread != nil {
+		total = h.unread.Total()
+	} else {
+		for _, n := range h.notifiers() {
+			total += max(n.unread, 0)
+		}
 	}
 	setTooltip(tooltipText(total))
 }

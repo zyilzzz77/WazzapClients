@@ -167,25 +167,28 @@ func newHost(b model.Backend, o Options) *host {
 	b, _ = withAuto(b)
 	loadPerf(b)
 	h := &host{
-		b:        b,
-		o:        o,
-		link:     o.Link,
-		wake:     make(chan struct{}, 1),
-		reqs:     make(chan request, 16),
-		syncPct:  -1,
-		drafts:   make(map[string]*chatDraft),
-		bg:       make(map[string]*bgAccount),
-		bgOpen:   make(chan bgOpened, 8),
-		bgDue:    make(chan struct{}, 1),
-		closing:  make(map[string]chan struct{}),
-		notesDue: make(chan struct{}, 1),
+		b:            b,
+		o:            o,
+		link:         o.Link,
+		wake:         make(chan struct{}, 1),
+		reqs:         make(chan request, 16),
+		syncPct:      -1,
+		drafts:       make(map[string]*chatDraft),
+		draftsByAcct: make(map[string]map[string]*chatDraft),
+		scrollByAcct: make(map[string]map[string]string),
+		bg:           make(map[string]*bgAccount),
+		bgOpen:       make(chan bgOpened, 8),
+		bgDue:        make(chan struct{}, 1),
+		closing:      make(map[string]chan struct{}),
+		notesDue:     make(chan struct{}, 1),
 	}
 	dir := ""
 	if o.Accounts != nil {
 		dir = o.Accounts.Active
+		h.unread = accounts.LoadUnread(o.Accounts.Root())
 	}
 	h.notes = h.newNotifier(b, dir)
-	h.openNotes(h.notes)
+	h.openNotes(h.notes, dir)
 	return h
 }
 
@@ -254,6 +257,15 @@ type host struct {
 	openChat string                // chat to open in the next window
 	link     string                // a WhatsApp link to open once online
 	drafts   map[string]*chatDraft // the chats' drafts, kept across windows
+	// draftsByAcct shelves each account's drafts under its Dir while
+	// another account is open (drafts_acct.go).
+	draftsByAcct map[string]map[string]*chatDraft
+	// scrollByAcct is the first visible message's ID per chat per
+	// account (drafts_acct.go).
+	scrollByAcct map[string]map[string]string
+	// unread is the persisted unread-chat count of each account
+	// (accounts.Counts, acctunread.go); nil without accounts.
+	unread   *accounts.Counts
 	quitting bool
 
 	// leaving is set while the open account logs out to switch to
@@ -691,7 +703,8 @@ func (h *host) enableDrop(hwnd uintptr) {
 func (h *host) closeWindow() {
 	h.idle.Stop()
 	h.away.Stop()
-	h.u.stashDraft() // the open chat's composer, for the next window
+	h.u.stashScroll() // the open chat's scroll position, for its account
+	h.u.stashDraft()  // the open chat's composer, for the next window
 	h.u.shutdown()
 	h.win, h.u, h.events, h.ack, h.queue = nil, nil, nil, nil, nil
 	h.hwnd = 0

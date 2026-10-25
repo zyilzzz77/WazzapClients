@@ -65,6 +65,7 @@ var settingsItems = [...]listItem{
 	{ic: icKeyboard, title: "Keyboard shortcuts", sub: "Quick actions"},
 	{ic: icSpeed, title: "Performance", sub: "Animations, media, memory and CPU"},
 	{ic: icExtension, title: "Extra features", sub: "Slash commands and more, not in WhatsApp"},
+	{ic: icTerminal, title: "AI", sub: "AI assistant, auto-reply, your own key"},
 	{ic: icDocument, title: "Snippets", sub: "Saved messages and payloads"},
 	{ic: icHelp, title: "Help", sub: "Help centre, contact us, privacy policy"},
 	{ic: icLogout, title: "Log out", danger: true},
@@ -82,6 +83,7 @@ const (
 	settingShortcuts
 	settingPerformance // perf.go
 	settingExtras      // this app's own features (extras.go)
+	settingAI          // AI assistant (ai_settings.go)
 	settingSnippets
 	settingHelp
 	settingLogout

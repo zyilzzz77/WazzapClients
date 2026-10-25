@@ -103,6 +103,7 @@ var settingsViews = map[string]struct {
 	"performance":   {settingPerformance, ""},
 	"advanced":      {settingPerformance, "advanced"},
 	"extras":        {settingExtras, ""},
+	"ai":            {settingAI, ""},
 	// With demo accounts: the Account page's list of them, and the
 	// pages of the second (always connected) and third (checked).
 	"accounts":     {settingAccount, ""},
@@ -250,12 +251,9 @@ func (u *UI) settingsPage() []settingsSection {
 	case "emojianim":
 		return u.emojiPlaceSettings()
 	case "theme":
-		t := u.backend.Pref(prefTheme)
-		return []settingsSection{{title: "Choose a theme", rows: []settingRow{
-			{key: "system", kind: setRadio, title: "System default", on: t != "light" && t != "dark", run: func() { u.setTheme("") }},
-			{key: "light", kind: setRadio, title: "Light", on: t == "light", run: func() { u.setTheme("light") }},
-			{key: "dark", kind: setRadio, title: "Dark", on: t == "dark", run: func() { u.setTheme("dark") }},
-		}}}
+		return u.themePage()
+	case "density":
+		return u.densityPage()
 	case "camera", "mic", "speaker":
 		return u.deviceChoices(s.sub)
 	}
@@ -296,8 +294,12 @@ func (u *UI) categoryPage(k int) []settingsSection {
 	case settingChats:
 		return []settingsSection{
 			{title: "Display", rows: []settingRow{
-				{key: "theme", ic: icPalette, title: "Theme", sub: themeNames[u.backend.Pref(prefTheme)],
+				{key: "theme", ic: icPalette, title: "Theme", sub: u.themeName(),
 					trailing: icChevronRight, run: func() { u.openSettingsSub("theme") }},
+				{key: "density", title: "Density", sub: densityNames[u.backend.Pref(prefDensity)],
+					trailing: icChevronRight, run: func() { u.openSettingsSub("density") }},
+				{key: "wallpaper", ic: icPalette, title: "Wallpaper", sub: u.wallpaperName(),
+					trailing: icChevronRight, run: func() { u.openWallpaper("") }},
 				{key: prefDoodles, kind: setToggle, title: "Wallpaper doodles", sub: "Draw doodles on the chat background",
 					on: u.doodles, run: func() { u.doodles = !u.doodles; setPref(b, prefDoodles, u.doodles) }},
 				{key: prefEmojiStyle, ic: icEmoji, title: "Emoji style", sub: emojiStyles[emojiStyle()].title,
@@ -314,6 +316,8 @@ func (u *UI) categoryPage(k int) []settingsSection {
 		return u.perfSettingsPage()
 	case settingExtras:
 		return u.extrasSettings()
+	case settingAI:
+		return u.aiSettings()
 	case settingSnippets:
 		return u.snippetSettingsRows()
 	case settingHelp:
@@ -652,6 +656,15 @@ func (u *UI) privacySettings() []settingsSection {
 			note: "Start new chats with disappearing messages set to your timer."},
 		{title: "Groups", rows: []settingRow{link("groups", "Groups", whoLabel(a.Privacy[model.PrivacyGroups]))}},
 		{title: "Blocked contacts", rows: []settingRow{link("blocked", "Blocked contacts", blocked)}},
+		{title: "View once", rows: []settingRow{{key: "viewoncesave", kind: setToggle,
+			on:    u.viewOnceSave,
+			title: "Allow saving view-once media",
+			sub: "When on, the view-once viewer offers a Save button. The sender expected this media to " +
+				"disappear — only save media you were sent with care, and never share it on.",
+			run: func() {
+				u.viewOnceSave = !u.viewOnceSave
+				setExtra(u.backend, model.PrefViewOnceSave, u.viewOnceSave)
+			}}}},
 		{title: "Advanced", rows: []settingRow{{key: "linkpreviews", kind: setToggle,
 			on:    !prefOn(u.backend, prefLinkPreviews),
 			title: "Disable link previews",
@@ -761,36 +774,32 @@ func (u *UI) blockedContacts() []settingsSection {
 	return []settingsSection{sec}
 }
 
-// themeNames names the values of prefTheme.
-var themeNames = map[string]string{"": "System default", "light": "Light", "dark": "Dark"}
-
 // systemDark asks the system for its theme (tests pin it).
 var systemDark = desktop.SystemDark
 
-// setTheme remembers the theme ("light", "dark" or "" for the system's)
-// and switches the palette to it.
+// setTheme remembers the global default theme and switches to it at
+// once. "" is the system's.
 func (u *UI) setTheme(t string) {
 	u.backend.SetPref(prefTheme, t)
 	u.applyTheme()
 }
 
-// applyTheme switches the palette to the chosen theme. The system's is
-// read again each time, so it is also called when the window gets focus,
-// to follow a change made while the app ran. A system that doesn't say
-// gets the dark theme, which was the app's own default.
+// setThemeAcct remembers this account's own theme, overriding the global
+// default; "" goes back to the default.
+func (u *UI) setThemeAcct(t string) {
+	u.backend.SetPref(prefThemeAcct, t)
+	u.applyTheme()
+}
+
+// applyTheme switches the palette to the chosen theme: the account's
+// override, else the global default, else the system's, read again each
+// time so it also follows a change made while the app ran (the window
+// calls it when it gets focus). A system that doesn't say gets the dark
+// theme, which was the app's own default.
 func (u *UI) applyTheme() {
-	dark := true
-	switch u.backend.Pref(prefTheme) {
-	case "light":
-		dark = false
-	case "dark":
-	default:
-		if d, ok := systemDark(); ok {
-			dark = d
-		}
-	}
-	if dark != u.dark || u.pal == nil {
-		u.SetDark(dark)
+	p, dark := resolveTheme(u.backend.Pref(prefTheme), u.backend.Pref(prefThemeAcct))
+	if dark != u.dark || u.pal == nil || u.pal != p {
+		u.setPalette(p, dark)
 	}
 }
 
@@ -843,6 +852,11 @@ func shortcutSettings(enterSend bool) []settingsSection {
 		}},
 		{title: "Everywhere", rows: []settingRow{
 			k("Close a menu, dialog, panel or reply", "Esc"),
+			k("Search chats", mod, "K"),
+			k("New chat", mod, "N"),
+			k("Switch to account 1–9", mod, "1–9"),
+			k("Mute the open chat", mod, "Shift", "M"),
+			k("Search the open chat's messages", mod, "Shift", "F"),
 			k("Show or hide the chat list", mod, "Shift", "L"),
 			k("Turn privacy mode on or off (Extra features)", mod, "Shift", "P"),
 			k("Zoom in", mod, "+"),

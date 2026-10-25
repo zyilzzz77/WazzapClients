@@ -50,6 +50,7 @@ func (u *UI) loadExtras() {
 	u.editHistory = extraOn(b, prefEditHistory)
 	u.keepDeleted = extraOn(b, model.PrefKeepDeleted)
 	u.viewOnceReplay = extraOn(b, model.PrefViewOnceReplay)
+	u.viewOnceSave = extraOn(b, model.PrefViewOnceSave)
 	u.loadGIFPrefs()
 	u.grayCmds = map[string]bool{}
 	for _, c := range command.All {
@@ -82,6 +83,8 @@ var commandIcons = map[string]*icon.Icon{
 	"whisper":     icVisibilityOff,
 	"snippet":     icDocument,
 	"catch":       icTerminal,
+	"ai":          icTerminal,
+	"aisummary":   icDocument,
 }
 
 func commandIcon(name string) *icon.Icon {

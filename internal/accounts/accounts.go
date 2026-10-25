@@ -34,6 +34,12 @@ type Account struct {
 	Phone string `json:"phone,omitempty"` // international format, with a leading +
 	// Background is how the account runs while another one is open.
 	Background Mode `json:"background,omitempty"`
+	// NotifyOff silences this account's notifications (per-account,
+	// with the global notification prefs as the default).
+	NotifyOff bool `json:"notify_off,omitempty"`
+	// AIEnabled is the per-account AI switch (Phase 3 placeholder:
+	// stored here, no AI runs on it yet).
+	AIEnabled bool `json:"ai_enabled,omitempty"`
 	// Checked is when the account last caught up with WhatsApp: a check
 	// in the background finished, or it stopped being the open one.
 	Checked time.Time `json:"checked,omitzero"`
@@ -93,9 +99,12 @@ func (a *Account) InBackground() bool { return a.Linked() && a.Background != Off
 
 // List is the accounts of a root data directory.
 type List struct {
-	root     string
-	Active   string    `json:"active"` // the open account's Dir
-	Accounts []Account `json:"accounts"`
+	root string
+	// AlwaysLimit caps the accounts that stay Always connected at
+	// once; 0 means MaxAlways.
+	AlwaysCap int       `json:"always_limit,omitempty"`
+	Active    string    `json:"active"` // the open account's Dir
+	Accounts  []Account `json:"accounts"`
 }
 
 // Load reads the accounts of root. Without a list (the first run, or an

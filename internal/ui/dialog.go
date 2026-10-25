@@ -24,13 +24,14 @@ const (
 	dialogConfirm
 	dialogForward
 	dialogPoll
-	dialogInvite  // a group's invite link (invite.go)
-	dialogTheme   // a chat's theme (chatmenu.go); title is the chat's ID
-	dialogEdits   // an edited message's earlier texts (edit.go)
-	dialogPayload // a message's payload (/catch, snippets.go)
-	dialogList    // a bot's list of choices (listpick.go)
-	dialogEvent   // the attach menu's Create event (eventnew.go)
-	dialogAppLock // App lock's password and auto-lock (applock.go)
+	dialogInvite    // a group's invite link (invite.go)
+	dialogTheme     // a chat's theme (chatmenu.go); title is the chat's ID
+	dialogWallpaper // a chat's wallpaper (wallpaper_ui.go); title is the chat's ID, "" for the default
+	dialogEdits     // an edited message's earlier texts (edit.go)
+	dialogPayload   // a message's payload (/catch, snippets.go)
+	dialogList      // a bot's list of choices (listpick.go)
+	dialogEvent     // the attach menu's Create event (eventnew.go)
+	dialogAppLock   // App lock's password and auto-lock (applock.go)
 )
 
 type dialogButton struct {
@@ -195,6 +196,8 @@ func (u *UI) layoutDialog(gtx C) {
 		panel = record(gtx, u.invitePanel)
 	case dialogTheme:
 		panel = record(gtx, u.themePanel)
+	case dialogWallpaper:
+		panel = record(gtx, u.wallpaperPanel)
 	case dialogEdits:
 		panel = record(gtx, u.editsPanel)
 	case dialogPayload:

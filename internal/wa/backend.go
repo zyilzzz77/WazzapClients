@@ -131,6 +131,9 @@ var (
 // shows up under "Linked devices" on the phone.
 var osInfo sync.Once
 
+// DataDir implements model.Backend.
+func (b *Backend) DataDir() string { return b.dataDir }
+
 // Open opens (or creates) the session database in dataDir.
 func Open(dataDir string, debug bool) (*Backend, error) {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
